@@ -3,7 +3,7 @@ module github.com/talhaHavadar/wormholes/tailscale
 go 1.26.4
 
 require (
-	github.com/talhaHavadar/interstellar v0.0.0
+	github.com/talhaHavadar/interstellar v0.1.0
 	tailscale.com v1.100.0
 )
 
@@ -64,7 +64,3 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8 // indirect
 )
-
-// Until interstellar is published with version tags, resolve the SDK from the
-// sibling checkout. Replace with a versioned require once it is tagged.
-replace github.com/talhaHavadar/interstellar => ../../interstellar

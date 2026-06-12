@@ -1,3 +1,9 @@
 /bin/
 *.comp
 *.snap
+
+# Local Go workspace: overlays the sibling interstellar checkout for
+# development. Per-developer (assumes ../interstellar exists), so not committed
+# — the modules' go.mod still pins the published version for everyone else.
+go.work
+go.work.sum

@@ -3,7 +3,7 @@ module github.com/talhaHavadar/wormholes/wireguard
 go 1.26.4
 
 require (
-	github.com/talhaHavadar/interstellar v0.0.0
+	github.com/talhaHavadar/interstellar v0.1.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
 )
 
@@ -30,7 +30,3 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 	gvisor.dev/gvisor v0.0.0-20260224225140-573d5e7127a8 // indirect
 )
-
-// Until interstellar is published with version tags, resolve the SDK from the
-// sibling checkout. Replace with a versioned require once it is tagged.
-replace github.com/talhaHavadar/interstellar => ../../interstellar

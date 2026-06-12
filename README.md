@@ -44,12 +44,13 @@ and configure a target for it.
 
 ### Depending on the interstellar SDK
 
-Wormholes import `github.com/talhaHavadar/interstellar/pkg/wormhole`. Until
-interstellar is published with version tags, modules here resolve the SDK
-through a local `replace` directive assuming the repos are siblings:
+Wormholes import `github.com/talhaHavadar/interstellar/pkg/wormhole`, resolved
+as a normal published dependency:
 
-```
-replace github.com/talhaHavadar/interstellar => ../../interstellar
+```sh
+go get github.com/talhaHavadar/interstellar@latest   # or @main, or a tag
 ```
 
-Once interstellar is tagged, replace this with a normal versioned `require`.
+The modules here currently pin `interstellar v0.1.0`. To track the SDK's main
+branch during active development, `go get github.com/talhaHavadar/interstellar@main`
+(it resolves to a pseudo-version, or to the tag when main is exactly tagged).
