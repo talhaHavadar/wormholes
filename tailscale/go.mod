@@ -3,7 +3,7 @@ module github.com/talhaHavadar/wormholes/tailscale
 go 1.26.4
 
 require (
-	github.com/talhaHavadar/interstellar v0.1.0
+	github.com/talhaHavadar/interstellar v0.3.0
 	tailscale.com v1.100.0
 )
 
