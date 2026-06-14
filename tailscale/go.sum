@@ -215,8 +215,8 @@ github.com/tailscale/wireguard-go v0.0.0-20260527010701-b48af7099cad h1:Ky26FR5y
 github.com/tailscale/wireguard-go v0.0.0-20260527010701-b48af7099cad/go.mod h1:6SerzcvHWQchKO2BfNdmquA77CHSECZuFl+D9fp4RnI=
 github.com/tailscale/xnet v0.0.0-20240729143630-8497ac4dab2e h1:zOGKqN5D5hHhiYUp091JqK7DPCqSARyUfduhGUY8Bek=
 github.com/tailscale/xnet v0.0.0-20240729143630-8497ac4dab2e/go.mod h1:orPd6JZXXRyuDusYilywte7k094d7dycXXU5YnWsrwg=
-github.com/talhaHavadar/interstellar v0.1.0 h1:/y5WGou4iG+nOMLy0rfMtsntZqz/OQ01B9Th6PGB8Mk=
-github.com/talhaHavadar/interstellar v0.1.0/go.mod h1:iwwKVD2pavigP+ksZ4dD21uWz2546IWWZ11U/cwRsYI=
+github.com/talhaHavadar/interstellar v0.3.0 h1:qFSbyfOirWeI//H/pnBkPuejRB2jl5GEnMHKYctSwrI=
+github.com/talhaHavadar/interstellar v0.3.0/go.mod h1:iwwKVD2pavigP+ksZ4dD21uWz2546IWWZ11U/cwRsYI=
 github.com/tc-hib/winres v0.2.1 h1:YDE0FiP0VmtRaDn7+aaChp1KiF4owBiJa5l964l5ujA=
 github.com/tc-hib/winres v0.2.1/go.mod h1:C/JaNhH3KBvhNKVbvdlDWkbMDO9H4fKKDaN7/07SSuk=
 github.com/u-root/u-root v0.14.0 h1:Ka4T10EEML7dQ5XDvO9c3MBN8z4nuSnGjcd1jmU2ivg=
