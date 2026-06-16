@@ -1,0 +1,90 @@
+# Example interstellard config for the Debian build stack.
+#
+# debian-packager exposes typed tools (build_binary_package, build_source_package,
+# lint, check_watch) and requires a "builder" exec-endpoint port. Bind that port
+# to one of several environments below; the agent picks per call via the
+# core-injected `builder_target` argument. debian-packager itself never changes.
+#
+# Run with: interstellard --config debian-build-config.yaml --wormhole-dir <dir>
+# (the dir must contain: debian-packager, contained-debdev, testflinger, ssh,
+#  tailscale). See: interstellar__status to verify what loaded.
+
+wormhole_dir: /var/lib/interstellar/wormholes
+audit_log: /var/lib/interstellar/audit.jsonl
+
+targets:
+  # 1) Local container on the gateway host. Fastest; needs a container runtime
+  #    and `contained` present (or ensure_deps to install them).
+  local-unstable:
+    wormhole: contained-debdev
+    port: exec
+    config:
+      image: ghcr.io/talhahavadar/contained-debdev:debian-unstable
+      contained_path: /usr/local/bin/contained
+      runtime: docker            # docker or podman
+
+  # 2) A static remote builder over SSH (optionally tunnelled), container there.
+  remote-box:
+    wormhole: contained-debdev
+    port: exec
+    config:
+      image: ghcr.io/talhahavadar/contained-debdev:debian-unstable
+      runtime: podman            # rootless on the remote
+      ensure_deps: true          # write contained + verify the runtime on a clean box
+      install_runtime: true      # apt-get install podman if missing
+    idle_timeout: 30m
+    via:
+      host: build-box            # contained-debdev's optional "host" upstream
+  build-box:
+    wormhole: ssh
+    port: target
+    config:
+      host: build.internal
+      user: builder
+      key_file: /etc/interstellar/keys/builder
+    via:
+      net: tailnet               # optional: reach build.internal over the tailnet
+
+  # 3) MAAS baremetal reserved via Testflinger; container on the reserved machine.
+  reserved-trixie:
+    wormhole: contained-debdev
+    port: exec
+    config:
+      image: ghcr.io/talhahavadar/contained-debdev:debian-trixie
+      runtime: podman
+      ensure_deps: true
+      install_runtime: true
+    open_timeout: 60m            # waits on the testflinger reservation below
+    idle_timeout: 8h             # reserve once, build/lint/test many times
+    via:
+      host: tf-maas
+  tf-maas:
+    wormhole: testflinger
+    port: reserved
+    config:
+      job_file: /home/ci/sandbox/testflinger.yaml  # MAAS job: job_queue + provision_data.distro
+      ssh_keys: [gh:talhaHavadar]
+      reserve_timeout_secs: 21600
+    open_timeout: 60m
+    idle_timeout: 8h
+    via:
+      orchestrator: tf-box       # the host that runs testflinger-cli
+  tf-box:
+    wormhole: ssh
+    port: target
+    config:
+      host: orchestrator.tailnet
+      user: ci
+    via:
+      net: tailnet
+
+  # Shared tailnet network-context (tailscale wormhole, userspace tsnet).
+  tailnet:
+    wormhole: tailscale
+    port: tailnet
+    config:
+      hostname: interstellar-gw
+      authkey_env: TS_AUTHKEY      # auth key read from the environment, not stored here
+
+# The debian-packager tools are CapExecScoped (+ CapNetwork for check_watch),
+# allowed by default policy. CapExecArbitrary stays denied.
