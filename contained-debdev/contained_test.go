@@ -98,6 +98,37 @@ func TestEnsureDepsNoopWhenPresent(t *testing.T) {
 	}
 }
 
+func TestPreflightMissingContained(t *testing.T) {
+	base := func(ctx context.Context, cmd wormhole.Command, sink wormhole.ExecSink) error {
+		body := ""
+		if len(cmd.Argv) >= 3 {
+			body = cmd.Argv[2]
+		}
+		if contains(body, "test -x") {
+			sink.SetExit(1) // contained missing
+		} else {
+			sink.SetExit(0)
+		}
+		return nil
+	}
+	err := preflight(context.Background(), &wormhole.LinkRequest{},
+		config{ContainedPath: "/usr/local/bin/contained", Runtime: "docker"}, base)
+	if err == nil || !contains(err.Error(), "contained not found") {
+		t.Fatalf("want a clear contained-not-found error, got %v", err)
+	}
+}
+
+func TestPreflightOK(t *testing.T) {
+	base := func(ctx context.Context, cmd wormhole.Command, sink wormhole.ExecSink) error {
+		sink.SetExit(0)
+		return nil
+	}
+	if err := preflight(context.Background(), &wormhole.LinkRequest{},
+		config{ContainedPath: "/usr/local/bin/contained", Runtime: "docker"}, base); err != nil {
+		t.Fatalf("preflight should pass when deps present: %v", err)
+	}
+}
+
 func contains(s, sub string) bool {
 	return len(sub) == 0 || (len(s) >= len(sub) && indexOf(s, sub) >= 0)
 }

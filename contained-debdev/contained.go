@@ -83,11 +83,9 @@ func openLink(ctx context.Context, req *wormhole.LinkRequest) (*wormhole.ActiveL
 		}
 	}
 
-	if cfg.EnsureDeps {
-		if err := ensureDeps(ctx, req, cfg, base); err != nil {
-			cleanup()
-			return nil, err
-		}
+	if err := preflight(ctx, req, cfg, base); err != nil {
+		cleanup()
+		return nil, err
 	}
 
 	run := func(ctx context.Context, cmd wormhole.Command, sink wormhole.ExecSink) error {

@@ -15,15 +15,37 @@ import (
 //go:embed contained.sh
 var containedScript string
 
+// preflight makes sure contained + a container runtime are usable on the
+// builder before the link is reported up. With ensure_deps it installs what is
+// missing; otherwise it verifies and fails with a clear, early message so a
+// misconfiguration (e.g. a wrong contained_path) surfaces at connect time
+// instead of as a cryptic "command failed" deep inside the first tool call.
+func preflight(ctx context.Context, req *wormhole.LinkRequest, cfg config, base wormhole.CommandFunc) error {
+	if cfg.EnsureDeps {
+		return ensureDeps(ctx, req, cfg, base)
+	}
+	if code, _, _ := runCapture(ctx, base, wormhole.Command{
+		Argv: []string{"sh", "-c", "test -x " + shellQuote(cfg.ContainedPath)},
+	}); code != 0 {
+		return fmt.Errorf("contained not found at %q on the builder (show this to user) — set contained_path to the script's path, or enable ensure_deps to install it", cfg.ContainedPath)
+	}
+	if code, _, _ := runCapture(ctx, base, wormhole.Command{
+		Argv: []string{"sh", "-c", "command -v " + shellQuote(cfg.Runtime)},
+	}); code != 0 {
+		req.Logf("warn", "container runtime %q not found on the builder's PATH; builds will fail unless contained can reach it", cfg.Runtime)
+	}
+	return nil
+}
+
 // ensureDeps makes the `contained` script and a container runtime available on
 // the target (wherever base runs). It is idempotent and safe to repeat, and
 // streams progress via the link request so a slow apt/install isn't silent.
 func ensureDeps(ctx context.Context, req *wormhole.LinkRequest, cfg config, base wormhole.CommandFunc) error {
 	req.Progress(-1, "ensuring build dependencies on target")
 
-	// 1. The contained script, installed to an absolute path (invoked by that
-	//    path, so the target's PATH never matters). Try an unprivileged move
-	//    first, then sudo.
+	// The contained script, installed to an absolute path (invoked by that
+	// path, so the target's PATH never matters). Try an unprivileged move
+	// first, then sudo.
 	if code, _, _ := runCapture(ctx, base, wormhole.Command{
 		Argv: []string{"sh", "-c", "test -x " + shellQuote(cfg.ContainedPath)},
 	}); code != 0 {
@@ -38,11 +60,10 @@ func ensureDeps(ctx context.Context, req *wormhole.LinkRequest, cfg config, base
 			Argv:  []string{"sh", "-c", script},
 			Stdin: []byte(containedScript),
 		}); code != 0 {
-			return fmt.Errorf("installing contained to %s: %s", cfg.ContainedPath, strings.TrimSpace(stderr))
+			return fmt.Errorf("(!! show this to user) installing contained to %s: %s", cfg.ContainedPath, strings.TrimSpace(stderr))
 		}
 	}
 
-	// 2. A container runtime. Prefer the configured one (podman, rootless).
 	if code, _, _ := runCapture(ctx, base, wormhole.Command{
 		Argv: []string{"sh", "-c", "command -v " + shellQuote(cfg.Runtime)},
 	}); code != 0 {
