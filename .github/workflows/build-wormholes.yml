@@ -9,22 +9,67 @@ on:
     tags: ['v*']
   pull_request:
     branches: [main]
+  workflow_dispatch: {} # manual run: rebuilds every wormhole
 permissions:
   contents: read
 jobs:
-  # Discover wormholes: every top-level dir with a Dockerfile.
+  # Discover which wormholes to build: every top-level dir with a Dockerfile,
+  # narrowed to those that changed in this push/PR. Tag pushes and manual runs
+  # build all (a release must publish every image); a new branch or unknown
+  # base also falls back to all.
   discover:
     runs-on: ubuntu-latest
     outputs:
       wormholes: ${{ steps.set.outputs.wormholes }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # need history to diff against the base / previous push
       - id: set
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          BEFORE: ${{ github.event.before }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          wormholes=$(find . -mindepth 2 -maxdepth 2 -name Dockerfile -printf '%h\n' \
-            | sed 's|^\./||' | sort | jq -R . | jq -cs .)
+          set -euo pipefail
+
+          # All wormholes: top-level dirs containing a Dockerfile.
+          all=$(find . -mindepth 2 -maxdepth 2 -name Dockerfile -printf '%h\n' \
+            | sed 's|^\./||' | sort -u)
+
+          # changed-dirs to build. The empty string is the "build everything"
+          # sentinel; "__none__" means "diffed, but no wormhole dir changed".
+          changed=""
+          if [ "$REF_TYPE" = "tag" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "reason: tag/manual -> build all"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            changed=$(git diff --name-only "$PR_BASE_SHA...HEAD" \
+              | awk -F/ 'NF>1 {print $1}' | sort -u)
+            changed=${changed:-__none__}
+          elif [ "$EVENT_NAME" = "push" ]; then
+            if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+               || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              echo "reason: unknown base (new branch / force-push) -> build all"
+            else
+              changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA" \
+                | awk -F/ 'NF>1 {print $1}' | sort -u)
+              changed=${changed:-__none__}
+            fi
+          fi
+
+          if [ -z "$changed" ]; then
+            selected="$all"                                  # build everything
+          else
+            selected=$(comm -12 <(printf '%s\n' "$all") <(printf '%s\n' "$changed"))
+          fi
+
+          wormholes=$(printf '%s\n' "$selected" | sed '/^$/d' | jq -R . | jq -cs .)
           echo "wormholes=$wormholes" >> "$GITHUB_OUTPUT"
-          echo "Discovered wormholes: $wormholes"
+          echo "all:      $(printf '%s ' $all)"
+          echo "changed:  ${changed:-<all>}"
+          echo "selected: $wormholes"
   build:
     needs: discover
     if: needs.discover.outputs.wormholes != '[]'
@@ -102,3 +147,24 @@ jobs:
           sbom: true
           cache-from: type=gha,scope=${{ matrix.wormhole }}
           cache-to: type=gha,mode=max,scope=${{ matrix.wormhole }}
+  # Single required status check. Make THIS the required check in branch
+  # protection (not the matrix `build` job): it passes when the build matrix
+  # succeeded or was legitimately skipped (an empty matrix from a docs-only
+  # change), and fails if discovery or any build failed — so a no-op PR never
+  # leaves a required check stuck "pending".
+  gate:
+    if: always()
+    needs: [discover, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate on build result
+        run: |
+          echo "discover=${{ needs.discover.result }} build=${{ needs.build.result }}"
+          if [ "${{ needs.discover.result }}" != "success" ]; then
+            echo "::error::discover did not succeed (${{ needs.discover.result }})"
+            exit 1
+          fi
+          case "${{ needs.build.result }}" in
+            success|skipped) echo "build gate passed"; exit 0 ;;
+            *) echo "::error::build result: ${{ needs.build.result }}"; exit 1 ;;
+          esac
