@@ -129,17 +129,13 @@ func reserve(ctx context.Context, req *wormhole.LinkRequest, cfg config, orch *w
 		req.Logf("warn", "job provision_data does not look like MAAS (no distro); only MAAS is supported")
 	}
 
-	// Stage the prepared job on the orchestrator and submit it.
-	tmp := "/tmp/interstellar-tf-" + req.LinkID + ".yaml"
-	stage, err := capture(ctx, orch, wormhole.Command{
-		Argv:  []string{"sh", "-c", "cat > " + shellQuote(tmp)},
-		Stdin: job,
-	})
-	if err != nil || stage.exit != 0 {
-		return "", sshTarget{}, fmt.Errorf("staging job on orchestrator: %v %s", err, strings.TrimSpace(stage.stderr))
-	}
+	// Pipe the prepared job straight into `testflinger-cli submit -` so we
+	// never touch the orchestrator's filesystem. Avoids the snap-private /tmp/
+	// problem when testflinger-cli is a strict-confined snap.
 	req.Progress(-1, "submitting testflinger job")
-	sub, err := capture(ctx, orch, tfCmd(cfg, "submit", tmp))
+	submitCmd := tfCmd(cfg, "submit", "-")
+	submitCmd.Stdin = job
+	sub, err := capture(ctx, orch, submitCmd)
 	if err != nil || sub.exit != 0 {
 		return "", sshTarget{}, fmt.Errorf("testflinger submit: %v %s", err, strings.TrimSpace(sub.stderr+sub.stdout))
 	}
