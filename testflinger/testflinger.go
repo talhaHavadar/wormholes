@@ -20,9 +20,17 @@ const (
 
 // config is the admin-supplied link configuration.
 type config struct {
-	// JobFile is the path, on the orchestrator, to a base Testflinger job YAML
-	// using MAAS provisioning (job_queue + provision_data.distro).
+	// JobFile is an optional path, on the orchestrator, to a base Testflinger
+	// reserve job YAML. It is the fallback: the direct fields below override
+	// anything it sets, so a job can be described entirely in config without a
+	// file.
 	JobFile string `json:"job_file"`
+	// JobQueue is the Testflinger queue to submit to. Overrides the job file's
+	// job_queue; required if no job file supplies one.
+	JobQueue string `json:"job_queue"`
+	// ProvisionData is the Testflinger provision_data block (e.g. {distro: noble}).
+	// Its keys are merged over the job file's provision_data, taking priority.
+	ProvisionData map[string]any `json:"provision_data"`
 	// SSHKeys are identities (gh:user / lp:user) injected into reserve_data.
 	SSHKeys []string `json:"ssh_keys"`
 	// ReserveTimeoutSecs is the reservation duration and the upper bound on how
@@ -50,8 +58,8 @@ func parseConfig(raw json.RawMessage) (config, error) {
 			return config{}, fmt.Errorf("testflinger config: %w", err)
 		}
 	}
-	if c.JobFile == "" {
-		return config{}, fmt.Errorf("testflinger config: job_file is required")
+	if c.JobFile == "" && c.JobQueue == "" {
+		return config{}, fmt.Errorf("testflinger config: set job_queue (with provision_data/ssh_keys) directly, or point job_file at a base job")
 	}
 	if c.TestflingerBin == "" {
 		c.TestflingerBin = defaultTestflingerBin
@@ -68,7 +76,7 @@ func parseConfig(raw json.RawMessage) (config, error) {
 	return c, nil
 }
 
-// openLink reserves a MAAS machine through the orchestrator and provides an
+// openLink reserves a machine through the orchestrator and provides an
 // exec-endpoint that runs commands on it over SSH.
 func openLink(ctx context.Context, req *wormhole.LinkRequest) (*wormhole.ActiveLink, error) {
 	cfg, err := parseConfig(req.Config)
@@ -116,17 +124,18 @@ func openLink(ctx context.Context, req *wormhole.LinkRequest) (*wormhole.ActiveL
 
 // reserve submits the job and waits for the reserved machine's SSH details.
 func reserve(ctx context.Context, req *wormhole.LinkRequest, cfg config, orch *wormhole.ExecRunner) (string, sshTarget, error) {
-	req.Progress(-1, "reading testflinger job file")
-	cat, err := capture(ctx, orch, wormhole.Command{Argv: []string{"cat", cfg.JobFile}})
-	if err != nil || cat.exit != 0 {
-		return "", sshTarget{}, fmt.Errorf("reading job file %s: %v %s", cfg.JobFile, err, strings.TrimSpace(cat.stderr))
+	var base []byte
+	if cfg.JobFile != "" {
+		req.Progress(-1, "reading testflinger job file")
+		cat, err := capture(ctx, orch, wormhole.Command{Argv: []string{"cat", cfg.JobFile}})
+		if err != nil || cat.exit != 0 {
+			return "", sshTarget{}, fmt.Errorf("reading job file %s: %v %s", cfg.JobFile, err, strings.TrimSpace(cat.stderr))
+		}
+		base = []byte(cat.stdout)
 	}
-	job, err := prepareJob([]byte(cat.stdout), cfg.SSHKeys, cfg.ReserveTimeoutSecs)
+	job, err := prepareJob(base, cfg)
 	if err != nil {
 		return "", sshTarget{}, err
-	}
-	if !looksLikeMAAS(job) {
-		req.Logf("warn", "job provision_data does not look like MAAS (no distro); only MAAS is supported")
 	}
 
 	// Pipe the prepared job straight into `testflinger-cli submit -` so we

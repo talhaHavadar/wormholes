@@ -62,7 +62,11 @@ targets:
     wormhole: testflinger
     port: reserved
     config:
-      job_file: /home/ci/sandbox/testflinger.yaml  # MAAS job: job_queue + provision_data.distro
+      # Describe the job directly. Alternatively set job_file to a base job on
+      # the orchestrator; these direct fields override it, file is the fallback
+      # (job_file: /home/ci/sandbox/testflinger.yaml).
+      job_queue: maas-x86
+      provision_data: { distro: noble }
       ssh_keys: [gh:talhaHavadar]
       reserve_timeout_secs: 21600
     open_timeout: 60m

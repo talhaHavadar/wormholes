@@ -10,7 +10,7 @@ import (
 
 func TestPrepareJobInjectsReserveData(t *testing.T) {
 	base := []byte("job_queue: maas-x86\nprovision_data:\n  distro: noble\n")
-	out, err := prepareJob(base, []string{"gh:talhaHavadar", "lp:talha"}, 7200)
+	out, err := prepareJob(base, config{SSHKeys: []string{"gh:talhaHavadar", "lp:talha"}, ReserveTimeoutSecs: 7200})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,7 +36,7 @@ func TestPrepareJobInjectsReserveData(t *testing.T) {
 
 func TestPrepareJobKeepsExistingKeys(t *testing.T) {
 	base := []byte("job_queue: q\nreserve_data:\n  ssh_keys:\n    - lp:someone\n")
-	out, err := prepareJob(base, nil, 0)
+	out, err := prepareJob(base, config{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,21 +45,80 @@ func TestPrepareJobKeepsExistingKeys(t *testing.T) {
 	}
 }
 
+// TestPrepareJobFromConfigOnly builds a job with no base file, entirely from
+// direct config fields.
+func TestPrepareJobFromConfigOnly(t *testing.T) {
+	out, err := prepareJob(nil, config{
+		JobQueue:      "maas-x86",
+		ProvisionData: map[string]any{"distro": "noble"},
+		SSHKeys:       []string{"gh:talha"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["job_queue"] != "maas-x86" {
+		t.Fatalf("job_queue = %v", doc["job_queue"])
+	}
+	pd, ok := doc["provision_data"].(map[string]any)
+	if !ok || pd["distro"] != "noble" {
+		t.Fatalf("provision_data = %v", doc["provision_data"])
+	}
+}
+
+// TestPrepareJobConfigOverridesFile checks config takes priority while the job
+// file fills in the rest: job_queue is replaced, provision_data merges key by
+// key (config distro wins, file-only disks survive).
+func TestPrepareJobConfigOverridesFile(t *testing.T) {
+	base := []byte("job_queue: from-file\nprovision_data:\n  distro: jammy\n  disks: [sda]\n")
+	out, err := prepareJob(base, config{
+		JobQueue:      "from-config",
+		ProvisionData: map[string]any{"distro": "noble"},
+		SSHKeys:       []string{"gh:talha"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := yaml.Unmarshal(out, &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc["job_queue"] != "from-config" {
+		t.Fatalf("job_queue not overridden: %v", doc["job_queue"])
+	}
+	pd, _ := doc["provision_data"].(map[string]any)
+	if pd["distro"] != "noble" {
+		t.Fatalf("distro not overridden: %v", pd["distro"])
+	}
+	if _, ok := pd["disks"]; !ok {
+		t.Fatalf("file-only provision_data key dropped: %v", pd)
+	}
+}
+
 func TestPrepareJobErrors(t *testing.T) {
-	if _, err := prepareJob([]byte("provision_data: {distro: noble}\n"), []string{"gh:x"}, 1); err == nil {
+	if _, err := prepareJob([]byte("provision_data: {distro: noble}\n"), config{SSHKeys: []string{"gh:x"}, ReserveTimeoutSecs: 1}); err == nil {
 		t.Fatal("expected error on missing job_queue")
 	}
-	if _, err := prepareJob([]byte("job_queue: q\n"), nil, 0); err == nil {
+	if _, err := prepareJob([]byte("job_queue: q\n"), config{}); err == nil {
 		t.Fatal("expected error on missing ssh_keys")
 	}
 }
 
-func TestLooksLikeMAAS(t *testing.T) {
-	if !looksLikeMAAS([]byte("job_queue: q\nprovision_data:\n  distro: noble\n")) {
-		t.Fatal("distro job should look like MAAS")
+func TestParseConfigRequiresJobSource(t *testing.T) {
+	// Neither a job file nor a direct job_queue: rejected.
+	if _, err := parseConfig([]byte(`{"ssh_keys":["gh:x"]}`)); err == nil {
+		t.Fatal("expected error when neither job_file nor job_queue is set")
 	}
-	if looksLikeMAAS([]byte("job_queue: q\nprovision_data:\n  url: http://img\n")) {
-		t.Fatal("url job should not look like MAAS")
+	// job_queue alone (no file) is enough to pass config validation.
+	if _, err := parseConfig([]byte(`{"job_queue":"maas-x86"}`)); err != nil {
+		t.Fatalf("job_queue should satisfy config validation: %v", err)
+	}
+	// A job file alone is still fine.
+	if _, err := parseConfig([]byte(`{"job_file":"/tmp/job.yaml"}`)); err != nil {
+		t.Fatalf("job_file should satisfy config validation: %v", err)
 	}
 }
 

@@ -88,7 +88,7 @@ targets:
   tf-maas:
     wormhole: testflinger
     port: reserved
-    config: { job_file: ~/sandbox/testflinger.yaml, ssh_keys: [gh:me] }
+    config: { job_queue: maas-x86, provision_data: { distro: noble }, ssh_keys: [gh:me] }
     open_timeout: 60m # the reservation is slow
     idle_timeout: 8h # reserve once, build many times
     via: { orchestrator: tf-box }

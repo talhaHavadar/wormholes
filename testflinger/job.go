@@ -9,28 +9,49 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// prepareJob reads a base Testflinger job and ensures it has a reserve_data
-// block with ssh keys and a timeout, injecting the configured values. It
-// validates the minimum a reserve job needs.
-func prepareJob(jobYAML []byte, sshKeys []string, timeoutSecs int) ([]byte, error) {
+// prepareJob builds the Testflinger job to submit. The optional base YAML (a
+// job file) is the fallback; the config's direct fields are overlaid on top
+// with priority. It also ensures a reserve_data block with ssh keys and a
+// timeout, then validates the minimum a reserve job needs.
+func prepareJob(base []byte, cfg config) ([]byte, error) {
 	var doc map[string]any
-	if err := yaml.Unmarshal(jobYAML, &doc); err != nil {
-		return nil, fmt.Errorf("parsing job yaml: %w", err)
+	if len(base) > 0 {
+		if err := yaml.Unmarshal(base, &doc); err != nil {
+			return nil, fmt.Errorf("parsing job yaml: %w", err)
+		}
 	}
 	if doc == nil {
 		doc = map[string]any{}
 	}
+
+	// job_queue: the config value overrides the job file's.
+	if cfg.JobQueue != "" {
+		doc["job_queue"] = cfg.JobQueue
+	}
 	if _, ok := doc["job_queue"]; !ok {
-		return nil, fmt.Errorf("job yaml missing job_queue")
+		return nil, fmt.Errorf("job_queue is required (set job_queue in config or the job file)")
+	}
+
+	// provision_data: merge the config block over the job file's, key by key,
+	// so config wins while job-file-only keys survive as fallback.
+	if len(cfg.ProvisionData) > 0 {
+		pd, _ := doc["provision_data"].(map[string]any)
+		if pd == nil {
+			pd = map[string]any{}
+		}
+		for k, v := range cfg.ProvisionData {
+			pd[k] = v
+		}
+		doc["provision_data"] = pd
 	}
 
 	rd, _ := doc["reserve_data"].(map[string]any)
 	if rd == nil {
 		rd = map[string]any{}
 	}
-	if len(sshKeys) > 0 {
-		keys := make([]any, len(sshKeys))
-		for i, k := range sshKeys {
+	if len(cfg.SSHKeys) > 0 {
+		keys := make([]any, len(cfg.SSHKeys))
+		for i, k := range cfg.SSHKeys {
 			keys[i] = k
 		}
 		rd["ssh_keys"] = keys
@@ -38,27 +59,12 @@ func prepareJob(jobYAML []byte, sshKeys []string, timeoutSecs int) ([]byte, erro
 	if _, ok := rd["ssh_keys"]; !ok {
 		return nil, fmt.Errorf("reserve_data.ssh_keys is required (set ssh_keys in config or the job file)")
 	}
-	if timeoutSecs > 0 {
-		rd["timeout"] = timeoutSecs
+	if cfg.ReserveTimeoutSecs > 0 {
+		rd["timeout"] = cfg.ReserveTimeoutSecs
 	}
 	doc["reserve_data"] = rd
 
 	return yaml.Marshal(doc)
-}
-
-// looksLikeMAAS reports whether the job's provision_data resembles a MAAS job
-// (it selects a distro). Only MAAS is supported; this is a soft check.
-func looksLikeMAAS(jobYAML []byte) bool {
-	var doc map[string]any
-	if err := yaml.Unmarshal(jobYAML, &doc); err != nil {
-		return false
-	}
-	pd, ok := doc["provision_data"].(map[string]any)
-	if !ok {
-		return false
-	}
-	_, hasDistro := pd["distro"]
-	return hasDistro
 }
 
 var jobIDRE = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)

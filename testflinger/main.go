@@ -1,12 +1,13 @@
 // Command testflinger is a wormhole that provides an exec-endpoint into a
-// baremetal machine reserved via Canonical Testflinger (MAAS provisioning). It
+// baremetal machine reserved via Canonical Testflinger. It
 // reserves a system through an orchestrator host that runs testflinger-cli
 // (reached via its required exec-endpoint port, itself optionally tunnelled
 // over ssh+tailscale), waits for the reservation, then runs each command on the
 // reserved machine over SSH from the orchestrator.
 //
-// Only the MAAS provisioning method is supported: point job_file at a base
-// Testflinger job whose provision_data targets a MAAS queue (a `distro`).
+// The job can be described directly in config (job_queue + provision_data) or
+// sourced from a base job_file; when both are given the direct fields win and
+// the file is the fallback.
 //
 // It exposes no agent-facing tools, only the port. A consumer such as
 // contained-debdev (or debian-packager directly) holds the link and decides
@@ -19,9 +20,11 @@
 //	    wormhole: testflinger
 //	    port: reserved
 //	    config:
-//	      job_file: ~/sandbox/testflinger.yaml   # MAAS job (job_queue + provision_data.distro)
+//	      job_queue: maas-x86                     # required (here or in job_file)
+//	      provision_data: { distro: noble }       # merged over job_file
 //	      ssh_keys: [gh:talhaHavadar]
 //	      reserve_timeout_secs: 21600
+//	      # job_file: ~/sandbox/testflinger.yaml  # optional base; direct fields override it
 //	    via:
 //	      orchestrator: tf-box                    # ssh target with testflinger-cli
 package main
@@ -32,7 +35,7 @@ var version = "0.1.0"
 
 func main() {
 	w := wormhole.New("testflinger", version,
-		"Provides an exec-endpoint into a MAAS baremetal machine reserved via Testflinger.")
+		"Provides an exec-endpoint into a baremetal machine reserved via Testflinger.")
 
 	// Required: the host that runs testflinger-cli and can reach the lab.
 	w.Require(wormhole.Port{
