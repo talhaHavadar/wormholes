@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -50,55 +51,72 @@ func TestSplitGitRef(t *testing.T) {
 	}
 }
 
-func TestBuildCommandLocal(t *testing.T) {
-	cmd := buildCommand("/home/me/pkg", 0, []string{"sbuild", "-d", "unstable"})
+func TestPipelineCommandLocal(t *testing.T) {
+	cmd := pipelineCommand(buildBinaryBody, "/home/me/pkg", 0, "unstable")
 	if cmd.Dir != "/home/me/pkg" {
-		t.Fatalf("dir = %q, want /home/me/pkg", cmd.Dir)
+		t.Fatalf("local source should set Dir, got %q", cmd.Dir)
 	}
-	if len(cmd.Argv) != 3 || cmd.Argv[0] != "sbuild" {
+	// sh -c <script> debian-packager <kind> <repo> <ref> <depth> <toolargs...>
+	want := []string{"sh", "-c", preludeScript + "\n" + buildBinaryBody, "debian-packager", "local", "/home/me/pkg", "", "0", "unstable"}
+	if len(cmd.Argv) != len(want) {
 		t.Fatalf("argv = %v", cmd.Argv)
 	}
-}
-
-func TestBuildCommandGit(t *testing.T) {
-	cmd := buildCommand("https://github.com/x/repo.git@main", 1, []string{"sbuild", "-d", "trixie"})
-	if cmd.Dir != "" {
-		t.Fatalf("git build should not set Dir, got %q", cmd.Dir)
-	}
-	if len(cmd.Argv) != 3 || cmd.Argv[0] != "sh" || cmd.Argv[1] != "-c" {
-		t.Fatalf("argv = %v", cmd.Argv)
-	}
-	s := cmd.Argv[2]
-	for _, want := range []string{
-		"rm -rf -- interstellar-build-*",
-		"mktemp -d interstellar-build-XXXXXX",
-		"ISPKG_WORKSPACE=$d",
-		"'git' 'clone'",
-		"'--branch' 'main'",
-		"'--depth' '1'",
-		"'https://github.com/x/repo.git'",
-		`"$d/pkg"`,
-		`mkdir -p "$d/build-area"`,
-		`cd "$d/pkg"`,
-		"exec 'sbuild' '-d' 'trixie'",
-	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("script missing %q\n--- script ---\n%s", want, s)
+	for i := range want {
+		if cmd.Argv[i] != want[i] {
+			t.Fatalf("argv[%d] = %q, want %q", i, cmd.Argv[i], want[i])
 		}
 	}
 }
 
-func TestBuildCommandGitNoRefNoDepth(t *testing.T) {
-	cmd := buildCommand("git@github.com:x/repo.git", 0, []string{"uscan", "--report"})
-	s := cmd.Argv[2]
-	if strings.Contains(s, "--branch") {
-		t.Errorf("no ref should omit --branch:\n%s", s)
+func TestPipelineCommandGit(t *testing.T) {
+	cmd := pipelineCommand(buildBinaryBody, "https://github.com/x/repo.git@main", 1, "trixie", "amd64")
+	if cmd.Dir != "" {
+		t.Fatalf("git source should not set Dir, got %q", cmd.Dir)
 	}
-	if strings.Contains(s, "--depth") {
-		t.Errorf("depth 0 should omit --depth:\n%s", s)
+	if cmd.Argv[2] != preludeScript+"\n"+buildBinaryBody {
+		t.Fatalf("script is not prelude+body")
 	}
-	if !strings.Contains(s, "'git@github.com:x/repo.git'") {
-		t.Errorf("repo missing:\n%s", s)
+	rest := cmd.Argv[3:]
+	want := []string{"debian-packager", "git", "https://github.com/x/repo.git", "main", "1", "trixie", "amd64"}
+	if len(rest) != len(want) {
+		t.Fatalf("args = %v", rest)
+	}
+	for i := range want {
+		if rest[i] != want[i] {
+			t.Fatalf("arg[%d] = %q, want %q", i, rest[i], want[i])
+		}
+	}
+}
+
+func TestPipelineCommandGitNoRefNoDepth(t *testing.T) {
+	cmd := pipelineCommand(checkWatchBody, "git@github.com:x/repo.git", 0)
+	rest := cmd.Argv[3:] // debian-packager git <repo> <ref> <depth>
+	if rest[1] != "git" || rest[2] != "git@github.com:x/repo.git" {
+		t.Fatalf("kind/repo wrong: %v", rest)
+	}
+	if rest[3] != "" {
+		t.Errorf("no ref should pass empty ref, got %q", rest[3])
+	}
+	if rest[4] != "0" {
+		t.Errorf("depth should be 0, got %q", rest[4])
+	}
+}
+
+// TestScriptsSyntax checks every embedded script (prelude + each body) parses
+// under /bin/sh, so a broken script fails the build rather than a tool call.
+func TestScriptsSyntax(t *testing.T) {
+	bodies := map[string]string{
+		"build-source": buildSourceBody,
+		"build-binary": buildBinaryBody,
+		"check-watch":  checkWatchBody,
+		"lint":         lintBody,
+	}
+	for name, body := range bodies {
+		cmd := exec.Command("sh", "-n")
+		cmd.Stdin = strings.NewReader(preludeScript + "\n" + body)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("sh -n failed for %s: %v\n%s", name, err, out)
+		}
 	}
 }
 

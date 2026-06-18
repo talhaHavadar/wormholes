@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 
 	"github.com/talhaHavadar/interstellar/pkg/wormhole"
 )
@@ -21,7 +20,9 @@ type buildSourceInput struct {
 }
 
 type lintInput struct {
-	Target string `json:"target" jsonschema:"path on the builder to a .changes, .dsc, or .deb to lint"`
+	Source string `json:"source" jsonschema:"local path to the source tree on the builder, OR a git URL with an optional @<branch-or-tag>; used to build-and-lint, or (with ppa) to read the package name/series for the artifacts to pull"`
+	Depth  int    `json:"depth,omitempty" jsonschema:"git clone depth for a git source (0 = full history)"`
+	PPA    string `json:"ppa,omitempty" jsonschema:"optional Launchpad PPA (owner/name); when set, prebuilt source+binary artifacts are pulled from it and linted instead of building locally (requires ubuntu-dev-tools on the builder)"`
 }
 
 type checkWatchInput struct {
@@ -35,7 +36,7 @@ type buildResult struct {
 	Changes   string          `json:"changes,omitempty"`
 	Artifacts []string        `json:"artifacts"`
 	Lintian   *lintianSummary `json:"lintian,omitempty"`
-	Workspace string          `json:"workspace,omitempty"` // git builds: the temp clone dir on the builder
+	Workspace string          `json:"workspace,omitempty"` // git builds: the temp clone dir (removed on success, kept on failure)
 	LogTail   string          `json:"log_tail,omitempty"`
 }
 
@@ -52,19 +53,23 @@ func buildBinaryPackage(ctx context.Context, call *wormhole.Call, in buildBinary
 	}
 	defer r.Close()
 
-	argv := []string{"sbuild", "-d", in.Distribution}
+	toolArgs := []string{in.Distribution}
 	if in.Arch != "" {
-		argv = append(argv, "--arch", in.Arch)
+		toolArgs = append(toolArgs, in.Arch)
 	}
-	argv = append(argv, "--no-clean-source")
-
 	call.Logf("info", "building binary package from %s", in.Source)
 	call.Progress(-1, "running sbuild")
-	res, err := r.Run(ctx, buildCommand(in.Source, in.Depth, argv))
+	res, err := r.Run(ctx, pipelineCommand(buildBinaryBody, in.Source, in.Depth, toolArgs...))
 	if err != nil {
 		return nil, err
 	}
 	out := combine(res)
+	if err := relayError(out); err != nil {
+		return nil, err
+	}
+	for _, w := range warningMarkers(out) {
+		call.Logf("warn", "%s", w)
+	}
 	artifacts := findArtifacts(out)
 	return buildResult{
 		Success:   res.ExitCode == 0,
@@ -87,16 +92,19 @@ func buildSourcePackage(ctx context.Context, call *wormhole.Call, in buildSource
 	}
 	defer r.Close()
 
-	// Source-only build, unsigned (sign/dput separately). -d skips the
-	// build-dependency check, which is the builder's concern, not ours.
-	argv := []string{"dpkg-buildpackage", "-S", "-us", "-uc", "-d"}
 	call.Logf("info", "building source package from %s", in.Source)
 	call.Progress(-1, "running dpkg-buildpackage -S")
-	res, err := r.Run(ctx, buildCommand(in.Source, in.Depth, argv))
+	res, err := r.Run(ctx, pipelineCommand(buildSourceBody, in.Source, in.Depth))
 	if err != nil {
 		return nil, err
 	}
 	out := combine(res)
+	if err := relayError(out); err != nil {
+		return nil, err
+	}
+	for _, w := range warningMarkers(out) {
+		call.Logf("warn", "%s", w)
+	}
 	artifacts := findArtifacts(out)
 	return buildResult{
 		Success:   res.ExitCode == 0,
@@ -109,14 +117,16 @@ func buildSourcePackage(ctx context.Context, call *wormhole.Call, in buildSource
 }
 
 type lintResult struct {
+	Mode     string          `json:"mode"` // "source" (built locally) or "ppa" (pulled from Launchpad)
 	ExitCode int             `json:"exit_code"`
 	Summary  *lintianSummary `json:"summary,omitempty"`
+	Warnings []string        `json:"warnings,omitempty"`
 	LogTail  string          `json:"log_tail,omitempty"`
 }
 
 func lint(ctx context.Context, call *wormhole.Call, in lintInput) (any, error) {
-	if in.Target == "" {
-		return nil, fmt.Errorf("target is required")
+	if in.Source == "" {
+		return nil, fmt.Errorf("source is required")
 	}
 	r, err := runnerFor(call, "builder")
 	if err != nil {
@@ -124,19 +134,33 @@ func lint(ctx context.Context, call *wormhole.Call, in lintInput) (any, error) {
 	}
 	defer r.Close()
 
-	// Run from the artifact's directory so the builder's container mount
-	// includes it, and lint by basename.
-	dir, name := filepath.Dir(in.Target), filepath.Base(in.Target)
-	argv := []string{"lintian", "--info", "--pedantic", "--no-tag-display-limit", name}
-	call.Logf("info", "linting %s (in %s)", name, dir)
-	res, err := r.Run(ctx, wormhole.Command{Argv: argv, Dir: dir})
+	mode := "source"
+	var toolArgs []string
+	if in.PPA != "" {
+		mode = "ppa"
+		toolArgs = append(toolArgs, in.PPA)
+		call.Logf("info", "linting %s artifacts from ppa %s", in.Source, in.PPA)
+	} else {
+		call.Logf("info", "building and linting source package from %s", in.Source)
+	}
+	call.Progress(-1, "running lintian")
+	res, err := r.Run(ctx, pipelineCommand(lintBody, in.Source, in.Depth, toolArgs...))
 	if err != nil {
 		return nil, err
 	}
 	out := combine(res)
+	if err := relayError(out); err != nil {
+		return nil, err
+	}
+	warnings := warningMarkers(out)
+	for _, w := range warnings {
+		call.Logf("warn", "%s", w)
+	}
 	return lintResult{
+		Mode:     mode,
 		ExitCode: res.ExitCode,
 		Summary:  parseLintian(out),
+		Warnings: warnings,
 		LogTail:  tail(out, 60),
 	}, nil
 }
@@ -151,13 +175,15 @@ func checkWatch(ctx context.Context, call *wormhole.Call, in checkWatchInput) (a
 	}
 	defer r.Close()
 
-	argv := []string{"uscan", "--report", "--dehs"}
 	call.Logf("info", "checking debian/watch from %s", in.Source)
-	res, err := r.Run(ctx, buildCommand(in.Source, in.Depth, argv))
+	res, err := r.Run(ctx, pipelineCommand(checkWatchBody, in.Source, in.Depth))
 	if err != nil {
 		return nil, err
 	}
 	out := combine(res)
+	if err := relayError(out); err != nil {
+		return nil, err
+	}
 	w, err := parseWatch(out)
 	if err != nil {
 		return nil, err

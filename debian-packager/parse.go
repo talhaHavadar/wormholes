@@ -18,6 +18,41 @@ func combine(res *wormhole.ExecResult) string {
 	return string(res.Stdout) + "\n" + string(res.Stderr)
 }
 
+var (
+	errorMarkerRE   = regexp.MustCompile(`(?m)^ISPKG_ERROR: (.+)$`)
+	warningMarkerRE = regexp.MustCompile(`(?m)^ISPKG_WARNING: (.+)$`)
+)
+
+// relayError turns any ISPKG_ERROR markers the scripts emit into an error to
+// surface to the user — prerequisite failures (orig-tarball fetch, a missing
+// helper, nothing to lint) rather than a tool's own non-zero exit. Returns nil
+// when there are none.
+func relayError(out string) error {
+	m := errorMarkerRE.FindAllStringSubmatch(out, -1)
+	if len(m) == 0 {
+		return nil
+	}
+	msgs := make([]string, len(m))
+	for i, g := range m {
+		msgs[i] = strings.TrimSpace(g[1])
+	}
+	return fmt.Errorf("%s", strings.Join(msgs, "; "))
+}
+
+// warningMarkers returns the ISPKG_WARNING messages the scripts emit (e.g. a
+// kept-for-debugging workspace, or "source-only lint").
+func warningMarkers(out string) []string {
+	m := warningMarkerRE.FindAllStringSubmatch(out, -1)
+	if len(m) == 0 {
+		return nil
+	}
+	msgs := make([]string, len(m))
+	for i, g := range m {
+		msgs[i] = strings.TrimSpace(g[1])
+	}
+	return msgs
+}
+
 // artifactRE matches Debian artifact paths/filenames in build output. The
 // character class keeps `/` so relative paths (e.g. ../build-area/foo.deb)
 // survive, but stops at quotes and whitespace.

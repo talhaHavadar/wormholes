@@ -1,17 +1,13 @@
 package main
 
 import (
+	_ "embed"
 	"regexp"
 	"strconv"
 	"strings"
 
 	"github.com/talhaHavadar/interstellar/pkg/wormhole"
 )
-
-// gitWorkspacePrefix names the per-build temp workspaces created on the builder
-// for git sources. Previous workspaces with this prefix are removed before each
-// build so every run starts clean.
-const gitWorkspacePrefix = "interstellar-build-"
 
 var gitSchemes = []string{
 	"https://", "http://", "git://", "ssh://",
@@ -58,58 +54,44 @@ func splitGitRef(src string) (repo, ref string) {
 	return src, ""
 }
 
-// buildCommand returns the Command that runs buildArgv against source. A local
-// path runs in place (Dir = path). A git URL is cloned into a fresh temp
-// workspace on the builder — previous "interstellar-build-*" workspaces are
-// removed first — then buildArgv runs inside the clone. Everything stays under
-// the builder's working directory so it survives the container mount, and the
-// chosen workspace is echoed as "ISPKG_WORKSPACE=<path>".
-func buildCommand(source string, depth int, buildArgv []string) wormhole.Command {
-	if !isGitSource(source) {
-		return wormhole.Command{Argv: buildArgv, Dir: source}
-	}
-	repo, ref := splitGitRef(source)
+// The embedded shell stage library and per-tool bodies. The prelude is
+// prepended to each body (see pipelineCommand) so a tool composes only the
+// stages it needs, self-contained in one builder invocation.
+var (
+	//go:embed scripts/prelude.sh
+	preludeScript string
+	//go:embed scripts/build-source.sh
+	buildSourceBody string
+	//go:embed scripts/build-binary.sh
+	buildBinaryBody string
+	//go:embed scripts/check-watch.sh
+	checkWatchBody string
+	//go:embed scripts/lint.sh
+	lintBody string
+)
 
-	clone := []string{"git", "clone"}
-	if ref != "" {
-		clone = append(clone, "--branch", ref)
+// pipelineCommand builds a self-contained command: the shared prelude plus the
+// given tool body, invoked with the source-prep args (kind/repo/ref/depth)
+// followed by tool-specific args. A local source sets Dir so the runner (and
+// contained's mount) sees the tree in place; a git source is cloned in-script,
+// so it carries no Dir.
+func pipelineCommand(body, source string, depth int, toolArgs ...string) wormhole.Command {
+	kind, repo, ref := "local", source, ""
+	var dir string
+	if isGitSource(source) {
+		kind = "git"
+		repo, ref = splitGitRef(source)
+	} else {
+		dir = source
 	}
-	if depth > 0 {
-		clone = append(clone, "--depth", strconv.Itoa(depth))
-	}
-	clone = append(clone, "--", repo)
-
-	script := strings.Join([]string{
-		"set -eu",
-		"rm -rf -- " + gitWorkspacePrefix + "* 2>/dev/null || true",
-		"tmp=$(mktemp -d " + gitWorkspacePrefix + "XXXXXX)",
-		`d=$(cd "$tmp" && pwd)`,
-		`echo "ISPKG_WORKSPACE=$d"`,
-		shJoin(clone) + ` "$d/pkg"`,
-		// sbuild's build_dir is ../build-area; a fresh clone has no sibling, so
-		// create it. Harmless for source builds / uscan.
-		`mkdir -p "$d/build-area"`,
-		`cd "$d/pkg"`,
-		"exec " + shJoin(buildArgv),
-	}, "\n")
-	return wormhole.Command{Argv: []string{"sh", "-c", script}}
-}
-
-func shJoin(argv []string) string {
-	parts := make([]string, len(argv))
-	for i, a := range argv {
-		parts[i] = shellQuote(a)
-	}
-	return strings.Join(parts, " ")
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+	argv := []string{"sh", "-c", preludeScript + "\n" + body, "debian-packager", kind, repo, ref, strconv.Itoa(depth)}
+	argv = append(argv, toolArgs...)
+	return wormhole.Command{Argv: argv, Dir: dir}
 }
 
 var workspaceRE = regexp.MustCompile(`(?m)^ISPKG_WORKSPACE=(.+)$`)
 
-// parseWorkspace returns the git-build workspace path echoed by buildCommand.
+// parseWorkspace returns the git-build workspace path echoed by acquire_source.
 func parseWorkspace(out string) string {
 	if m := workspaceRE.FindStringSubmatch(out); m != nil {
 		return strings.TrimSpace(m[1])

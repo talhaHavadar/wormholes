@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestFindArtifacts(t *testing.T) {
 	out := `dpkg-deb: building package 'rocm-core' in '../build-area/rocm-core_7.2.4-1~exp1_amd64.deb'.
@@ -112,6 +115,32 @@ func TestTail(t *testing.T) {
 	}
 	if got := tail("only", 5); got != "only" {
 		t.Fatalf("tail short = %q", got)
+	}
+}
+
+func TestRelayError(t *testing.T) {
+	if err := relayError("log line\nnothing wrong here\n"); err != nil {
+		t.Fatalf("expected nil, got %v", err)
+	}
+	out := "doing things\nISPKG_ERROR: orig tarball fetch failed (uscan --download-current-version)\nmore"
+	err := relayError(out)
+	if err == nil || !strings.Contains(err.Error(), "orig tarball fetch failed") {
+		t.Fatalf("relayError = %v", err)
+	}
+	multi := "ISPKG_ERROR: first\nISPKG_ERROR: second\n"
+	if err := relayError(multi); err == nil || !strings.Contains(err.Error(), "first") || !strings.Contains(err.Error(), "second") {
+		t.Fatalf("expected both errors, got %v", err)
+	}
+}
+
+func TestWarningMarkers(t *testing.T) {
+	if w := warningMarkers("nothing\n"); w != nil {
+		t.Fatalf("expected nil, got %v", w)
+	}
+	out := "ISPKG_WARNING: no binary packages to lint\nbuild log\nISPKG_WARNING: kept for debugging (exit 1): /tmp/x"
+	w := warningMarkers(out)
+	if len(w) != 2 || w[0] != "no binary packages to lint" {
+		t.Fatalf("warnings = %v", w)
 	}
 }
 

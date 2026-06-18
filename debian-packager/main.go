@@ -37,21 +37,21 @@ func main() {
 	wormhole.AddTool(w, wormhole.Tool[buildBinaryInput]{
 		Name:          "build_binary_package",
 		Description:   "Build Debian binary packages (.deb) from a source tree with sbuild.",
-		Capabilities:  []wormhole.Capability{wormhole.CapExecScoped},
+		Capabilities:  []wormhole.Capability{wormhole.CapExecScoped, wormhole.CapNetwork},
 		RequiresPorts: []string{"builder"},
 		Handler:       buildBinaryPackage,
 	})
 	wormhole.AddTool(w, wormhole.Tool[buildSourceInput]{
 		Name:          "build_source_package",
 		Description:   "Build a Debian source package (.dsc/.changes) for upload.",
-		Capabilities:  []wormhole.Capability{wormhole.CapExecScoped},
+		Capabilities:  []wormhole.Capability{wormhole.CapExecScoped, wormhole.CapNetwork},
 		RequiresPorts: []string{"builder"},
 		Handler:       buildSourcePackage,
 	})
 	wormhole.AddTool(w, wormhole.Tool[lintInput]{
 		Name:          "lint",
-		Description:   "Run lintian on a built .changes/.dsc/.deb and report findings.",
-		Capabilities:  []wormhole.Capability{wormhole.CapExecScoped},
+		Description:   "Build a package from source and run lintian on it, or (with a ppa) pull and lint its prebuilt Launchpad artifacts.",
+		Capabilities:  []wormhole.Capability{wormhole.CapExecScoped, wormhole.CapNetwork},
 		RequiresPorts: []string{"builder"},
 		Handler:       lint,
 	})
