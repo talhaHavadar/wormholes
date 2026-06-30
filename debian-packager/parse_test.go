@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -166,7 +167,7 @@ ISPKG_STEP_BEGIN: control_wrap_sort
 diff output line
 ISPKG_STEP_END: control_wrap_sort exit=1
 `
-	steps := parseReviewSteps(out, 10)
+	steps := parseReviewSteps(out)
 	if len(steps) != 4 {
 		t.Fatalf("expected 4 steps, got %d: %+v", len(steps), steps)
 	}
@@ -207,7 +208,7 @@ ISPKG_STEP_BEGIN: lintian_source
 ISPKG_STEP_STATUS: ok
 ISPKG_STEP_END: lintian_source exit=0
 `
-	steps := parseReviewSteps(out, 10)
+	steps := parseReviewSteps(out)
 	if len(steps) != 2 {
 		t.Fatalf("expected 2 steps, got %d: %+v", len(steps), steps)
 	}
@@ -220,8 +221,58 @@ ISPKG_STEP_END: lintian_source exit=0
 }
 
 func TestParseReviewStepsEmpty(t *testing.T) {
-	if s := parseReviewSteps("no markers at all\n", 10); len(s) != 0 {
+	if s := parseReviewSteps("no markers at all\n"); len(s) != 0 {
 		t.Fatalf("expected no steps, got %+v", s)
+	}
+}
+
+func TestParseReviewStepsCapsLongLine(t *testing.T) {
+	// A single line over maxStepLineBytes must be truncated with a marker,
+	// not preserved verbatim — otherwise one license-check dump on a binary
+	// blob can blow the whole gRPC response past 4 MiB.
+	long := strings.Repeat("x", maxStepLineBytes+5000)
+	out := "ISPKG_STEP_BEGIN: licensecheck\n" + long + "\nISPKG_STEP_STATUS: ok\nISPKG_STEP_END: licensecheck exit=0\n"
+	steps := parseReviewSteps(out)
+	if len(steps) != 1 {
+		t.Fatalf("want 1 step, got %d", len(steps))
+	}
+	if len(steps[0].LogTail) > maxStepLineBytes+200 {
+		t.Fatalf("LogTail still %d bytes; per-line cap not applied", len(steps[0].LogTail))
+	}
+	if !strings.Contains(steps[0].LogTail, "line truncated") {
+		t.Fatalf("missing truncation marker in: %q", steps[0].LogTail[:200])
+	}
+}
+
+func TestParseReviewStepsCapsTotalBytes(t *testing.T) {
+	// Many medium-sized lines (each under the per-line cap) must collectively
+	// be capped to maxStepLogBytes from the END (errors are usually at the
+	// bottom), with a header announcing dropped earlier lines.
+	var b strings.Builder
+	b.WriteString("ISPKG_STEP_BEGIN: dump\n")
+	// 1 KiB lines × 200 = 200 KiB of content, well over the 64 KiB cap.
+	line := strings.Repeat("a", 1024)
+	for i := 0; i < 200; i++ {
+		fmt.Fprintf(&b, "line%03d %s\n", i, line)
+	}
+	b.WriteString("FINAL_TAIL_MARKER\n")
+	b.WriteString("ISPKG_STEP_STATUS: ok\n")
+	b.WriteString("ISPKG_STEP_END: dump exit=0\n")
+	steps := parseReviewSteps(b.String())
+	if len(steps) != 1 {
+		t.Fatalf("want 1 step, got %d", len(steps))
+	}
+	if got := len(steps[0].LogTail); got > maxStepLogBytes {
+		t.Fatalf("LogTail %d bytes > cap %d", got, maxStepLogBytes)
+	}
+	if !strings.Contains(steps[0].LogTail, "FINAL_TAIL_MARKER") {
+		t.Fatalf("tail dropped — FINAL_TAIL_MARKER missing")
+	}
+	if !strings.Contains(steps[0].LogTail, "earlier line(s) truncated") {
+		t.Fatalf("missing truncation header in: %q", steps[0].LogTail[:100])
+	}
+	if strings.Contains(steps[0].LogTail, "line000 ") {
+		t.Fatalf("earliest line should have been dropped")
 	}
 }
 

@@ -182,14 +182,29 @@ var (
 	stepHintRE    = regexp.MustCompile(`^ISPKG_STEP_HINT:\s+(.*)$`)
 )
 
+// Caps on per-step log capture, sized so a worst-case 20-step report fits
+// inside gRPC's default 4 MiB message limit with headroom. Hit when a step
+// dumps a lot (copyright_licensecheck on a big tree) or one long line (a
+// binary blob, a base64 chunk, a single grep match against a giant file).
+const (
+	// maxStepLineBytes truncates any single line over this length, with a
+	// trailing "[line truncated, N bytes]" marker. Stops one runaway line
+	// from consuming the whole step budget.
+	maxStepLineBytes = 4 * 1024
+	// maxStepLogBytes is the upper bound on a step's LogTail. The TAIL is
+	// kept (errors are usually at the bottom); dropped earlier lines are
+	// announced with a "[N earlier line(s) truncated]" header.
+	maxStepLogBytes = 64 * 1024
+)
+
 // parseReviewSteps walks the combined output and produces one reviewStep per
 // ISPKG_STEP_BEGIN/END pair in the order they appear. Lines bearing step
-// markers are stripped from the captured log; the rest is tailed to
-// logTailLines.
+// markers are stripped from the captured log; the rest is capped to
+// maxStepLogBytes (tail-preserving) with per-line truncation.
 //
 // Robustness: a BEGIN with no matching END (script crashed mid-step) flushes
 // the partial step as fail with exit=-1; an END with no BEGIN is dropped.
-func parseReviewSteps(out string, logTailLines int) []reviewStep {
+func parseReviewSteps(out string) []reviewStep {
 	var steps []reviewStep
 	var current *reviewStep
 	var logLines []string
@@ -207,7 +222,7 @@ func parseReviewSteps(out string, logTailLines int) []reviewStep {
 			}
 		}
 		if len(logLines) > 0 {
-			current.LogTail = tail(strings.Join(logLines, "\n"), logTailLines)
+			current.LogTail = tailBytes(logLines, maxStepLogBytes)
 		}
 		steps = append(steps, *current)
 		current = nil
@@ -245,12 +260,62 @@ func parseReviewSteps(out string, logTailLines int) []reviewStep {
 			current.AgentHint = strings.TrimSpace(m[1])
 			continue
 		}
-		logLines = append(logLines, line)
+		logLines = append(logLines, truncateLine(line, maxStepLineBytes))
 	}
 	if current != nil {
 		flush(-1)
 	}
 	return steps
+}
+
+// truncateLine clips line to at most maxBytes and appends a marker noting how
+// much was dropped. Stops runaway single-line dumps (binary blobs in license
+// reports, grep matches inside a giant minified file) from consuming the
+// whole per-step log budget.
+func truncateLine(line string, maxBytes int) string {
+	if len(line) <= maxBytes {
+		return line
+	}
+	return line[:maxBytes] + fmt.Sprintf("… [line truncated, %d bytes dropped]", len(line)-maxBytes)
+}
+
+// tailBytes joins the tail of lines that fits within maxBytes (including the
+// joining newlines), prefixing the result with "[N earlier line(s) truncated]"
+// when anything was dropped. If even the final line alone exceeds maxBytes
+// the line itself is byte-truncated from the front (we want the END of a
+// runaway final line — that's usually where the error sits).
+func tailBytes(lines []string, maxBytes int) string {
+	if len(lines) == 0 {
+		return ""
+	}
+	total := 0
+	keep := 0
+	for i := len(lines) - 1; i >= 0; i-- {
+		add := len(lines[i])
+		if keep > 0 {
+			add++ // newline joining this line to the ones after it
+		}
+		if total+add > maxBytes {
+			break
+		}
+		total += add
+		keep++
+	}
+	if keep == 0 {
+		// Even the last line alone is over budget; keep its tail.
+		last := lines[len(lines)-1]
+		marker := fmt.Sprintf("[… %d earlier line(s) truncated, last line head dropped]\n", len(lines)-1)
+		if budget := maxBytes - len(marker); budget > 0 && len(last) > budget {
+			return marker + last[len(last)-budget:]
+		}
+		return marker + last
+	}
+	dropped := len(lines) - keep
+	body := strings.Join(lines[len(lines)-keep:], "\n")
+	if dropped == 0 {
+		return body
+	}
+	return fmt.Sprintf("[… %d earlier line(s) truncated]\n", dropped) + body
 }
 
 // overallReviewStatus aggregates per-step results: fail dominates, then warn,

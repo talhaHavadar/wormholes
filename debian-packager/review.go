@@ -52,7 +52,7 @@ func review(ctx context.Context, call *wormhole.Call, in reviewInput) (any, erro
 		return nil, err
 	}
 	out := combine(res)
-	steps := parseReviewSteps(out, 80)
+	steps := parseReviewSteps(out)
 	// Script-level failure (e.g. ENABLED_STEPS drift) emits ISPKG_ERROR and
 	// produces no step blocks — surface that as a hard error.
 	if len(steps) == 0 {
