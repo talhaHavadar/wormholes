@@ -125,22 +125,17 @@ func wrap(cfg config, cmd wormhole.Command) wormhole.Command {
 	}
 }
 
-// runnerCommandFunc adapts an upstream ExecRunner to a CommandFunc. The SDK's
-// runner is request/response rather than streaming, so a long remote command
-// reports its collected output when it finishes.
+// runnerCommandFunc adapts an upstream ExecRunner to a CommandFunc by
+// forwarding each chunk of the upstream's exec stream straight to sink.
+//
+// The earlier shape used r.Run, which buffered the entire remote output and
+// flushed it as one sink.Stdout call at the end. For long builds (review,
+// sbuild) the final flush could exceed the downstream consumer's default
+// gRPC MaxRecvMsgSize and fail its Recv with ResourceExhausted. RunStream
+// keeps each upstream chunk small on the wire.
 func runnerCommandFunc(r *wormhole.ExecRunner) wormhole.CommandFunc {
 	return func(ctx context.Context, cmd wormhole.Command, sink wormhole.ExecSink) error {
-		res, err := r.Run(ctx, cmd)
-		if res != nil {
-			if len(res.Stdout) > 0 {
-				sink.Stdout(res.Stdout)
-			}
-			if len(res.Stderr) > 0 {
-				sink.Stderr(res.Stderr)
-			}
-			sink.SetExit(res.ExitCode)
-		}
-		return err
+		return r.RunStream(ctx, cmd, sink)
 	}
 }
 
