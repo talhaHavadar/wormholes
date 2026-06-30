@@ -110,6 +110,7 @@ func TestScriptsSyntax(t *testing.T) {
 		"build-binary": buildBinaryBody,
 		"check-watch":  checkWatchBody,
 		"lint":         lintBody,
+		"review":       reviewBody,
 	}
 	for name, body := range bodies {
 		cmd := exec.Command("sh", "-n")

@@ -68,6 +68,8 @@ var (
 	checkWatchBody string
 	//go:embed scripts/lint.sh
 	lintBody string
+	//go:embed scripts/review.sh
+	reviewBody string
 )
 
 // pipelineCommand builds a self-contained command: the shared prelude plus the

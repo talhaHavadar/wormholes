@@ -62,6 +62,13 @@ func main() {
 		RequiresPorts: []string{"builder"},
 		Handler:       checkWatch,
 	})
+	wormhole.AddTool(w, wormhole.Tool[reviewInput]{
+		Name:          "review",
+		Description:   "Run the Debian package review checklist on a source tree (watch, lintian, copyright, DEP-3 patch headers, debian/control hygiene, symbols, changelog, hardening, autopkgtest, upstream metadata, …) and return one report entry per step for the agent to evaluate.",
+		Capabilities:  []wormhole.Capability{wormhole.CapExecScoped, wormhole.CapNetwork},
+		RequiresPorts: []string{"builder"},
+		Handler:       review,
+	})
 
 	w.Serve()
 }

@@ -144,6 +144,106 @@ func TestWarningMarkers(t *testing.T) {
 	}
 }
 
+func TestParseReviewSteps(t *testing.T) {
+	out := `preamble noise the parser ignores
+ISPKG_STEP_BEGIN: watch
+uscan: Newer version available
+ISPKG_STEP_STATUS: ok
+ISPKG_STEP_SUMMARY: watch file works
+ISPKG_STEP_END: watch exit=0
+ISPKG_STEP_BEGIN: lintian_source
+E: rocm-core: no-changelog
+ISPKG_STEP_STATUS: warn
+ISPKG_STEP_SUMMARY: lintian reported tags
+ISPKG_STEP_HINT: agent: resolve every E
+ISPKG_STEP_END: lintian_source exit=0
+ISPKG_STEP_BEGIN: copyright_lrc
+lrc binary not found
+ISPKG_STEP_STATUS: skipped
+ISPKG_STEP_SUMMARY: lrc not installed
+ISPKG_STEP_END: copyright_lrc exit=0
+ISPKG_STEP_BEGIN: control_wrap_sort
+diff output line
+ISPKG_STEP_END: control_wrap_sort exit=1
+`
+	steps := parseReviewSteps(out, 10)
+	if len(steps) != 4 {
+		t.Fatalf("expected 4 steps, got %d: %+v", len(steps), steps)
+	}
+
+	if steps[0].Name != "watch" || steps[0].Status != "ok" || steps[0].Exit != 0 {
+		t.Errorf("step 0 = %+v", steps[0])
+	}
+	if !strings.Contains(steps[0].LogTail, "uscan: Newer") {
+		t.Errorf("step 0 log missing uscan line: %q", steps[0].LogTail)
+	}
+	if strings.Contains(steps[0].LogTail, "ISPKG_STEP_") {
+		t.Errorf("step 0 log still contains markers: %q", steps[0].LogTail)
+	}
+
+	if steps[1].Status != "warn" || steps[1].Summary != "lintian reported tags" {
+		t.Errorf("step 1 = %+v", steps[1])
+	}
+	if steps[1].AgentHint != "agent: resolve every E" {
+		t.Errorf("step 1 hint = %q", steps[1].AgentHint)
+	}
+
+	if steps[2].Status != "skipped" {
+		t.Errorf("step 2 status = %q, want skipped", steps[2].Status)
+	}
+
+	// last step: no STATUS marker, non-zero exit → defaults to fail
+	if steps[3].Status != "fail" || steps[3].Exit != 1 {
+		t.Errorf("step 3 = %+v (expected fail/exit=1)", steps[3])
+	}
+}
+
+func TestParseReviewStepsPartialBlock(t *testing.T) {
+	// BEGIN with no matching END (script crashed mid-step) must still emit
+	// a step entry, not be silently dropped.
+	out := `ISPKG_STEP_BEGIN: watch
+some log
+ISPKG_STEP_BEGIN: lintian_source
+ISPKG_STEP_STATUS: ok
+ISPKG_STEP_END: lintian_source exit=0
+`
+	steps := parseReviewSteps(out, 10)
+	if len(steps) != 2 {
+		t.Fatalf("expected 2 steps, got %d: %+v", len(steps), steps)
+	}
+	if steps[0].Name != "watch" || steps[0].Status != "fail" || steps[0].Exit != -1 {
+		t.Errorf("partial step = %+v (expected fail/exit=-1)", steps[0])
+	}
+	if steps[1].Name != "lintian_source" || steps[1].Status != "ok" {
+		t.Errorf("second step = %+v", steps[1])
+	}
+}
+
+func TestParseReviewStepsEmpty(t *testing.T) {
+	if s := parseReviewSteps("no markers at all\n", 10); len(s) != 0 {
+		t.Fatalf("expected no steps, got %+v", s)
+	}
+}
+
+func TestOverallReviewStatus(t *testing.T) {
+	cases := []struct {
+		name  string
+		steps []reviewStep
+		want  string
+	}{
+		{"all ok", []reviewStep{{Status: "ok"}, {Status: "ok"}}, "ok"},
+		{"skipped ignored", []reviewStep{{Status: "ok"}, {Status: "skipped"}}, "ok"},
+		{"any warn", []reviewStep{{Status: "ok"}, {Status: "warn"}, {Status: "ok"}}, "warn"},
+		{"fail dominates", []reviewStep{{Status: "warn"}, {Status: "fail"}, {Status: "ok"}}, "fail"},
+		{"empty", nil, "ok"},
+	}
+	for _, c := range cases {
+		if got := overallReviewStatus(c.steps); got != c.want {
+			t.Errorf("%s: got %q want %q", c.name, got, c.want)
+		}
+	}
+}
+
 func containsStr(list []string, s string) bool {
 	for _, x := range list {
 		if x == s {

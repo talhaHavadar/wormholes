@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/talhaHavadar/interstellar/pkg/wormhole"
@@ -162,6 +163,109 @@ func parseWatch(out string) (watchResult, error) {
 		Errors:          strings.TrimSpace(d.Errors),
 		NewerAvailable:  d.UpstreamVersion != "" && d.UpstreamVersion != d.DebianUversion,
 	}, nil
+}
+
+type reviewStep struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"` // ok | warn | fail | skipped
+	Exit      int    `json:"exit_code"`
+	Summary   string `json:"summary,omitempty"`
+	AgentHint string `json:"agent_hint,omitempty"`
+	LogTail   string `json:"log_tail,omitempty"`
+}
+
+var (
+	stepBeginRE   = regexp.MustCompile(`^ISPKG_STEP_BEGIN:\s+(\S+)\s*$`)
+	stepEndRE     = regexp.MustCompile(`^ISPKG_STEP_END:\s+(\S+)\s+exit=(-?\d+)\s*$`)
+	stepStatusRE  = regexp.MustCompile(`^ISPKG_STEP_STATUS:\s+(\S+)\s*$`)
+	stepSummaryRE = regexp.MustCompile(`^ISPKG_STEP_SUMMARY:\s+(.*)$`)
+	stepHintRE    = regexp.MustCompile(`^ISPKG_STEP_HINT:\s+(.*)$`)
+)
+
+// parseReviewSteps walks the combined output and produces one reviewStep per
+// ISPKG_STEP_BEGIN/END pair in the order they appear. Lines bearing step
+// markers are stripped from the captured log; the rest is tailed to
+// logTailLines.
+//
+// Robustness: a BEGIN with no matching END (script crashed mid-step) flushes
+// the partial step as fail with exit=-1; an END with no BEGIN is dropped.
+func parseReviewSteps(out string, logTailLines int) []reviewStep {
+	var steps []reviewStep
+	var current *reviewStep
+	var logLines []string
+
+	flush := func(exit int) {
+		if current == nil {
+			return
+		}
+		current.Exit = exit
+		if current.Status == "" {
+			if exit == 0 {
+				current.Status = "ok"
+			} else {
+				current.Status = "fail"
+			}
+		}
+		if len(logLines) > 0 {
+			current.LogTail = tail(strings.Join(logLines, "\n"), logTailLines)
+		}
+		steps = append(steps, *current)
+		current = nil
+		logLines = nil
+	}
+
+	for _, line := range strings.Split(out, "\n") {
+		if m := stepBeginRE.FindStringSubmatch(line); m != nil {
+			if current != nil {
+				flush(-1) // a partial step interrupted by the next BEGIN
+			}
+			current = &reviewStep{Name: m[1]}
+			continue
+		}
+		if m := stepEndRE.FindStringSubmatch(line); m != nil {
+			if current == nil {
+				continue
+			}
+			exit, _ := strconv.Atoi(m[2])
+			flush(exit)
+			continue
+		}
+		if current == nil {
+			continue
+		}
+		if m := stepStatusRE.FindStringSubmatch(line); m != nil {
+			current.Status = m[1]
+			continue
+		}
+		if m := stepSummaryRE.FindStringSubmatch(line); m != nil {
+			current.Summary = strings.TrimSpace(m[1])
+			continue
+		}
+		if m := stepHintRE.FindStringSubmatch(line); m != nil {
+			current.AgentHint = strings.TrimSpace(m[1])
+			continue
+		}
+		logLines = append(logLines, line)
+	}
+	if current != nil {
+		flush(-1)
+	}
+	return steps
+}
+
+// overallReviewStatus aggregates per-step results: fail dominates, then warn,
+// then ok. Skipped steps don't move the needle.
+func overallReviewStatus(steps []reviewStep) string {
+	overall := "ok"
+	for _, s := range steps {
+		switch s.Status {
+		case "fail":
+			return "fail"
+		case "warn":
+			overall = "warn"
+		}
+	}
+	return overall
 }
 
 // tail returns the last n lines of s.
