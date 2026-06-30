@@ -16,6 +16,14 @@ acquire_source "$1" "$2" "$3" "$4"
 shift 4
 ppa=${1:-}
 
+# Merge stderr into stdout so build/lint output appears inside the step block
+# it came from. The Go parser concatenates the captured stdout and stderr
+# buffers (stdout first, then stderr), so anything emitted to stderr inside a
+# step would otherwise land after all ISPKG_STEP_END markers and be dropped
+# from the per-step LogTail. With this in place a failing debuild/uscan/
+# snapshot dumps its error right inside its step's block.
+exec 2>&1
+
 # ────────────────────────────────────────────────────────────────────────
 # ENABLED_STEPS — edit to disable steps in the built container. A name
 # listed here MUST have a matching step_<name>() defined below; the
@@ -59,14 +67,21 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # never emits ISPKG_ERROR (which would abort the whole tool), so a failed
 # orig fetch fails only the step that needed it. Same source selection as
 # the prelude's fetch_orig (see is_snapshot_package for the detection).
+#
+# "Quiet" means non-fatal, NOT silent: the tool's own output (uscan/snapshot)
+# is left visible so a failure surfaces inside the step's LogTail with the
+# real error message, not just a generic summary.
 fetch_orig_quiet() {
     { [ -f debian/source/format ] && grep -q '(native)' debian/source/format; } && return 0
     if is_snapshot_package; then
-        have snapshot || return 1
-        snapshot orig >/dev/null 2>&1
+        have snapshot || {
+            echo "snapshot tool not installed on builder PATH"
+            return 1
+        }
+        snapshot orig
         return $?
     fi
-    uscan --download-current-version >/dev/null 2>&1
+    uscan --download-current-version
 }
 
 # run_step <name> — wrap a step function call in begin/end markers.
@@ -133,21 +148,28 @@ step_lintian_source() {
         summary "lintian not installed"
         return 1
     }
+    echo "=== fetch orig ==="
     fetch_orig_quiet || {
         status fail
-        summary "orig tarball fetch failed (uscan --download-current-version)"
+        if is_snapshot_package; then
+            summary "snapshot orig failed (see fetch output above)"
+        else
+            summary "uscan --download-current-version failed (see fetch output above)"
+        fi
         return 1
     }
     if have debuild; then
-        debuild --no-conf -S -d 1>&2 || {
+        echo "=== debuild --no-conf -S -d ==="
+        debuild --no-conf -S -d || {
             status fail
-            summary "debuild -S -d failed"
+            summary "debuild -S -d failed (see source-build output above)"
             return 1
         }
     else
-        dpkg-source -b . 1>&2 || {
+        echo "=== dpkg-source -b . ==="
+        dpkg-source -b . || {
             status fail
-            summary "dpkg-source -b failed"
+            summary "dpkg-source -b failed (see source-build output above)"
             return 1
         }
     fi
