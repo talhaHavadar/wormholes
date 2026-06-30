@@ -187,24 +187,21 @@ func reserve(ctx context.Context, req *wormhole.LinkRequest, cfg config, orch *w
 }
 
 // runOverSSH runs one command on the reserved machine, from the orchestrator,
-// over SSH. The remote working directory and environment are reconstructed in a
-// shell command string because ssh does not carry them.
+// over SSH. The remote working directory and environment are reconstructed in
+// a shell command string because ssh does not carry them.
+//
+// Uses RunStream so each stdout/stderr chunk from the orchestrator's exec
+// stream is forwarded straight to sink as it arrives. Run's buffer-and-flush
+// would coalesce the whole command's output into a single sink.Stdout call
+// which, for any review/build that produces more than ~4 MiB, exceeds the
+// downstream consumer's default gRPC MaxRecvMsgSize and fails its Recv with
+// ResourceExhausted.
 func runOverSSH(ctx context.Context, orch *wormhole.ExecRunner, cfg config, t sshTarget, cmd wormhole.Command, sink wormhole.ExecSink) error {
 	argv := []string{"ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes"}
 	argv = append(argv, cfg.SSHOptions...)
 	argv = append(argv, t.User+"@"+t.Host, remoteShellCommand(cmd.Dir, cmd.Env, cmd.Argv))
 
-	res, err := orch.Run(ctx, wormhole.Command{Argv: argv, Stdin: cmd.Stdin, TimeoutMs: cmd.TimeoutMs})
-	if res != nil {
-		if len(res.Stdout) > 0 {
-			sink.Stdout(res.Stdout)
-		}
-		if len(res.Stderr) > 0 {
-			sink.Stderr(res.Stderr)
-		}
-		sink.SetExit(res.ExitCode)
-	}
-	return err
+	return orch.RunStream(ctx, wormhole.Command{Argv: argv, Stdin: cmd.Stdin, TimeoutMs: cmd.TimeoutMs}, sink)
 }
 
 func cancelJob(cfg config, orch *wormhole.ExecRunner, jobID string) {
