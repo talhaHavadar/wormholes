@@ -64,12 +64,51 @@ acquire_source() {
 	cd "$d/pkg"
 }
 
+# is_snapshot_package reports whether the package uses the `snapshot` tool
+# rather than uscan-driven upstream tracking. Any one of these signals counts:
+#   * debian/snapshot.conf exists       (explicit, default config location)
+#   * UPSTREAM_URL is set in the env    (explicit, env-driven config)
+#   * the top changelog version carries snapshot's encoded git stamp,
+#     ~git<date>.<sha> or +git<date>.<sha>  (the version pattern snapshot
+#     itself writes; reliable even when both configs are absent)
+# A non-default snapshot config path (-c <path>) is not auto-detected — the
+# user must point review at it explicitly (symlink it to debian/snapshot.conf
+# or export UPSTREAM_URL).
+is_snapshot_package() {
+	[ -f debian/snapshot.conf ] && return 0
+	[ -n "${UPSTREAM_URL:-}" ] && return 0
+	[ -f debian/changelog ] || return 1
+	ver=$(dpkg-parsechangelog -S Version 2>/dev/null) || return 1
+	case "$ver" in
+		*~git[0-9]*|*+git[0-9]*) return 0 ;;
+	esac
+	return 1
+}
+
 # fetch_orig — make the upstream tarball available for a non-native package.
-# uscan deposits it in ../ (where dpkg-source and sbuild look). Native packages
-# need none. A failure is relayed clearly instead of surfacing later as a
+# The orig lands in ../ (where dpkg-source and sbuild look).
+#
+# Source selection:
+#   native package         -> no orig needed
+#   snapshot package       -> use `snapshot orig` (uscan can't synthesise
+#                             monorepo-subdir or multi-component origs).
+#                             Requires `snapshot` on the builder PATH.
+#                             See is_snapshot_package for the detection.
+#   otherwise              -> uscan --download-current-version
+#
+# A failure is relayed clearly via ISPKG_ERROR instead of surfacing later as a
 # confusing dpkg-source error.
 fetch_orig() {
 	{ [ -f debian/source/format ] && grep -q '(native)' debian/source/format; } && return 0
+	if is_snapshot_package; then
+		if ! command -v snapshot >/dev/null 2>&1; then
+			emit_error "snapshot-based package detected but the 'snapshot' tool is not on the builder PATH"
+			return 1
+		fi
+		snapshot orig && return 0
+		emit_error "snapshot orig failed (could not regenerate orig from upstream/pristine-tar)"
+		return 1
+	fi
 	uscan --download-current-version && return 0
 	emit_error "orig tarball fetch failed (uscan --download-current-version)"
 	return 1

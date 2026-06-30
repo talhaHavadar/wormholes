@@ -57,9 +57,15 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 # fetch_orig_quiet is review's own non-fatal version of fetch_orig: it
 # never emits ISPKG_ERROR (which would abort the whole tool), so a failed
-# orig fetch fails only the step that needed it.
+# orig fetch fails only the step that needed it. Same source selection as
+# the prelude's fetch_orig (see is_snapshot_package for the detection).
 fetch_orig_quiet() {
     { [ -f debian/source/format ] && grep -q '(native)' debian/source/format; } && return 0
+    if is_snapshot_package; then
+        have snapshot || return 1
+        snapshot orig >/dev/null 2>&1
+        return $?
+    fi
     uscan --download-current-version >/dev/null 2>&1
 }
 
@@ -78,6 +84,36 @@ run_step() {
 # ── step implementations (cwd = source tree) ───────────────────────────
 
 step_watch() {
+    # Snapshot-based packages: uscan can't track a monorepo-subdir source.
+    # Regenerating the orig with `snapshot orig` IS the upstream health
+    # check — success proves upstream is reachable and the orig is
+    # reproducible; failure means tracking is broken. uscan's "is there a
+    # newer release" question does not apply.
+    if is_snapshot_package; then
+        have snapshot || {
+            status fail
+            summary "snapshot-based package detected but 'snapshot' tool not installed on builder"
+            return 1
+        }
+        if [ -f debian/snapshot.conf ]; then
+            echo "=== debian/snapshot.conf ==="
+            cat debian/snapshot.conf
+            echo
+        else
+            echo "=== snapshot detected via $( [ -n "${UPSTREAM_URL:-}" ] && echo 'UPSTREAM_URL env' || echo 'changelog version pattern (~git…)') ==="
+            echo
+        fi
+        echo "=== snapshot orig ==="
+        if snapshot orig; then
+            status ok
+            summary "snapshot orig succeeded — upstream is reachable and orig is reproducible"
+            hint "agent: snapshot-based packages have no 'newer release' concept; the maintainer rolls new snapshots manually with 'snapshot create -u <ver>'"
+            return 0
+        fi
+        status fail
+        summary "snapshot orig failed — upstream tracking is broken"
+        return 1
+    fi
     [ -f debian/watch ] || {
         status fail
         summary "debian/watch missing"
