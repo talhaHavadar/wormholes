@@ -3,9 +3,19 @@ package main
 import (
 	"context"
 	"fmt"
+	"sync"
+	"time"
 
 	"github.com/talhaHavadar/interstellar/pkg/wormhole"
 )
+
+// reviewHeartbeatInterval is how often the heartbeat goroutine emits a
+// Progress update while the review script is running. The MCP harness drops
+// tool calls that go silent on the notification channel for too long, and
+// individual review steps (sbuild, fetch_orig, licensecheck) can run for
+// many minutes without producing any. r.Run buffers exec output internally,
+// so the underlying gRPC traffic doesn't keep the harness happy on its own.
+const reviewHeartbeatInterval = 20 * time.Second
 
 type reviewInput struct {
 	Source string `json:"source" jsonschema:"local path to the source tree on the builder, OR a git URL with an optional @<branch-or-tag>; git URLs are cloned into a fresh temp workspace"`
@@ -32,10 +42,12 @@ func review(ctx context.Context, call *wormhole.Call, in reviewInput) (any, erro
 	}
 	defer r.Close()
 
-	call.Logf("info", "running review checklist on %s", in.Source)
+	call.Logf("info", "running review checklist on %s (can take several minutes per step)", in.Source)
 	call.Progress(-1, "executing review steps")
+	stop := startHeartbeat(call, reviewHeartbeatInterval)
 	// The script always reads $1 as the optional ppa arg; pass empty when unset.
 	res, err := r.Run(ctx, pipelineCommand(reviewBody, in.Source, in.Depth, in.PPA))
+	stop()
 	if err != nil {
 		return nil, err
 	}
@@ -65,4 +77,27 @@ func review(ctx context.Context, call *wormhole.Call, in reviewInput) (any, erro
 		Steps:         steps,
 		Workspace:     parseWorkspace(out),
 	}, nil
+}
+
+// startHeartbeat emits an indeterminate Progress update every interval until
+// the returned stop func runs. Safe to call stop multiple times. Concurrent
+// with the caller's own use of call (the wormhole pkg serializes emits).
+func startHeartbeat(call *wormhole.Call, interval time.Duration) func() {
+	done := make(chan struct{})
+	start := time.Now()
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				elapsed := time.Since(start).Round(time.Second)
+				call.Progress(-1, fmt.Sprintf("review still running (%s elapsed)", elapsed))
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(done) }) }
 }
