@@ -181,7 +181,7 @@ step_lintian_source() {
         return 1
     }
     rc=0
-    lintian -EviL +pedantic "$dsc" || rc=$?
+    lintian -EviIL +pedantic "$dsc" || rc=$?
     # lintian: 0 clean, 1 had tags, >=2 internal error
     if [ "$rc" -ge 2 ]; then
         status fail
@@ -234,7 +234,7 @@ step_lintian_binary() {
     fi
     rc=0
     # shellcheck disable=SC2086
-    lintian -EvIL +pedantic $debs || rc=$?
+    lintian -EviIL +pedantic $debs || rc=$?
     if [ "$rc" -ge 2 ]; then
         status fail
         summary "lintian failed (exit $rc)"
