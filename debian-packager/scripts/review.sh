@@ -115,7 +115,7 @@ step_watch() {
             cat debian/snapshot.conf
             echo
         else
-            echo "=== snapshot detected via $( [ -n "${UPSTREAM_URL:-}" ] && echo 'UPSTREAM_URL env' || echo 'changelog version pattern (~git…)') ==="
+            echo "=== snapshot detected via $([ -n "${UPSTREAM_URL:-}" ] && echo 'UPSTREAM_URL env' || echo 'changelog version pattern (~git…)') ==="
             echo
         fi
         echo "=== snapshot orig ==="
@@ -159,8 +159,8 @@ step_lintian_source() {
         return 1
     }
     if have debuild; then
-        echo "=== debuild --no-conf -S -d ==="
-        debuild --no-conf -S -d || {
+        echo "=== debuild --no-conf -S -d -uc -us ==="
+        debuild --no-conf -S -d -uc -us || {
             status fail
             summary "debuild -S -d failed (see source-build output above)"
             return 1
