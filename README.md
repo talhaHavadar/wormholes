@@ -33,6 +33,54 @@ make list       # show discovered wormholes
 Drop the resulting binary into your interstellar gateway's `--wormhole-dir`
 and configure a target for it.
 
+## Smoke-testing a wormhole
+
+A wormhole binary is a `hashicorp/go-plugin` executable — running it directly
+prints _"This binary is a plugin. These are not meant to be executed
+directly."_ To exercise one, you load it into `interstellard` and drive it
+over MCP. For a one-shot manual check without registering with an MCP client,
+pipe an `initialize` + `notifications/initialized` + `tools/call` sequence
+into `interstellard --stdio`:
+
+```sh
+{ cat <<EOF
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"<wormhole>__<tool>","arguments":{ ... }}}
+EOF
+sleep 3600
+} | /path/to/interstellard --stdio --config /path/to/config.yaml 2>&1 \
+  | tee /tmp/mcp.jsonl
+```
+
+Two gotchas the recipe above avoids:
+
+- **Stdin must stay open** until the tool returns. Bare heredocs close the
+  moment the last line is read, and `interstellard` shuts down before your
+  call completes. The `{ …; sleep 3600; }` group holds it open; Ctrl-C or
+  `pkill sleep` when you're done.
+- **Don't put block-buffering awk between `interstellard` and the file.**
+  `awk '{print}' > file` block-buffers a few KiB before it writes, so short
+  responses (like `initialize`) never land on disk. `tee` line-buffers to
+  the terminal, so responses show up as they arrive.
+
+Run `tools/list` first (fast, no port linking needed) to confirm the plumbing
+before invoking a long tool call:
+
+```sh
+{ cat <<EOF
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}
+{"jsonrpc":"2.0","method":"notifications/initialized"}
+{"jsonrpc":"2.0","id":2,"method":"tools/list"}
+EOF
+sleep 3
+} | /path/to/interstellard --stdio --config /path/to/config.yaml 2>&1
+```
+
+For repeat runs, register the gateway as an MCP server in your agent (e.g.
+`claude mcp add interstellar -- /path/to/interstellard --stdio --config …`)
+and let the agent speak the protocol.
+
 ## Container images
 
 Each wormhole also ships as an **installer image** on GHCR
