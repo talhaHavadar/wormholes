@@ -1,0 +1,17 @@
+sbuild started at 2026-07-01T22:57:42Z
+dpkg-buildpackage -us -uc -d
+   dh binary
+dpkg-gencontrol: warning: Depends field of package clang-rocm: substitution variable ${dep:devlibs-objc} used, but is not defined
+dpkg-gencontrol: warning: Depends field of package clang-rocm: substitution variable ${dep:devlibs} used, but is not defined
+dpkg-gencontrol: warning: Depends field of package libclang-rocm-dev: substitution variable ${dep:devlibs} used, but is not defined
+dpkg-shlibdeps: warning: debian/llvm-rocm-tools/usr/lib/rocm/llvm/bin/llvm-ctxprof-util contains an unresolvable reference to symbol LLVM_23.0@LLVM_23.0: it is probably a plugin
+dpkg-shlibdeps: warning: debian/llvm-rocm-runtime/usr/lib/rocm/llvm/bin/lli contains an unresolvable reference to symbol LLVM_23.0@LLVM_23.0: it is probably a plugin
+dpkg-shlibdeps: warning: package could avoid a useless dependency if debian/llvm-rocm-dev/usr/lib/rocm/llvm/lib/libRemarks.so.23.0rocm7.2.14~ was not linked against libgcc_s.so.1 (it uses none of the library's symbols)
+dpkg-shlibdeps: warning: package could avoid a useless dependency if debian/clang-tools-rocm/usr/lib/rocm/llvm/bin/clang-tblgen was not linked against libz.so.1 (it uses none of the library's symbols)
+dh_shlibdeps: warning: Ignoring unknown option --no-something
+CMake Warning at CMakeLists.txt:17 (find_package):
+  By not providing "FindROCmCMakeBuildTools.cmake" in CMAKE_MODULE_PATH
+-- CMake Warning: fake nested cmake warning (should NOT match, not at line start)
+dpkg-shlibdeps: warning: symbol foo not found in library.so (should NOT match -- not the plugin variant)
+dh_installdocs: file /nonexistent/path not found (no colon-warning -- should NOT match)
+sbuild finished

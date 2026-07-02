@@ -38,6 +38,7 @@ ENABLED_STEPS="
   watch
   lintian_source
   lintian_binary
+  ppa_build_warnings
   copyright_licensecheck
   copyright_lrc
   copyright_holders
@@ -246,6 +247,281 @@ step_lintian_binary() {
     fi
     status ok
     summary "binary lintian clean"
+}
+
+# step_ppa_build_warnings — fetch every arch's build log for the latest
+# published source of this package in $ppa, dedup warnings across archs, and
+# report categorized counts. PPA-gated like step_lintian_binary: with no
+# $ppa, this step is skipped. See launchpad-api behavior: build_log_url is
+# served as raw application/gzip so `curl --compressed` does NOT decompress —
+# real `gunzip` is required.
+step_ppa_build_warnings() {
+    if [ -z "$ppa" ]; then
+        status skipped
+        summary "no ppa argument — pass ppa=owner/name to fetch launchpad build logs"
+        return 0
+    fi
+    have curl || {
+        status fail
+        summary "curl not installed"
+        return 1
+    }
+    have gunzip || {
+        status fail
+        summary "gunzip not installed (launchpad build logs are gzipped)"
+        return 1
+    }
+    have python3 || {
+        status fail
+        summary "python3 not installed (needed to parse launchpad JSON)"
+        return 1
+    }
+    pkg=$(dpkg-parsechangelog -S Source 2>/dev/null) || {
+        status fail
+        summary "dpkg-parsechangelog failed"
+        return 1
+    }
+    series=$(dpkg-parsechangelog -S Distribution 2>/dev/null)
+    [ -n "$series" ] || {
+        status fail
+        summary "changelog Distribution empty"
+        return 1
+    }
+
+    p=${ppa#ppa:}
+    owner=${p%/*}
+    archive=${p#*/}
+    lp="https://api.launchpad.net/1.0"
+    tmp=$(mktemp -d)
+    register_cleanup "$tmp"
+
+    # 1. latest source publication for pkg in series
+    curl -sfG --retry 3 --retry-delay 2 \
+        "$lp/~$owner/+archive/ubuntu/$archive" \
+        --data-urlencode "ws.op=getPublishedSources" \
+        --data-urlencode "source_name=$pkg" \
+        --data-urlencode "exact_match=true" \
+        --data-urlencode "order_by_date=true" \
+        --data-urlencode "distro_series=$lp/ubuntu/$series" \
+        -o "$tmp/pub.json" || {
+            status warn
+            summary "launchpad API unreachable or PPA not found ($owner/$archive)"
+            return 0
+        }
+
+    pub_link=$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+es=d.get("entries") or []
+print(es[0]["self_link"] if es else "")
+' "$tmp/pub.json")
+    [ -n "$pub_link" ] || {
+        status warn
+        summary "no source publication of $pkg in $ppa for $series"
+        return 0
+    }
+
+    # 2. all builds for that publication
+    curl -sfG --retry 3 --retry-delay 2 "$pub_link" \
+        --data-urlencode "ws.op=getBuilds" \
+        -o "$tmp/builds.json" || {
+            status warn
+            summary "could not list builds for $pkg publication"
+            return 0
+        }
+
+    # 3. every build with a log in a final state (Successfully built / Failed
+    #    to build). Emit "url arch state" per line.
+    python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+for e in d.get("entries") or []:
+    if not e.get("build_log_url"): continue
+    if e.get("buildstate") not in ("Successfully built","Failed to build"): continue
+    print(e["build_log_url"], e.get("arch_tag","?"), e["buildstate"].replace(" ","_"))
+' "$tmp/builds.json" > "$tmp/builds.list"
+
+    n_builds=$(wc -l <"$tmp/builds.list")
+    [ "$n_builds" -gt 0 ] || {
+        status skipped
+        summary "no completed builds with logs yet for $pkg in $ppa/$series"
+        return 0
+    }
+
+    # 4. fetch each log (max 6, 10 MB compressed → 100 MB decompressed cap).
+    #    Pipe curl → gunzip → head -c because LP serves .txt.gz as raw
+    #    gzipped bytes with Content-Type: application/gzip, so
+    #    curl --compressed is a no-op.
+    i=0
+    fetched=""
+    while IFS=' ' read -r url arch state; do
+        i=$((i + 1))
+        [ "$i" -gt 6 ] && break
+        if curl -sfL --retry 3 --retry-delay 2 --max-filesize 10485760 "$url" 2>/dev/null |
+            gunzip -c 2>/dev/null |
+            head -c 104857600 >"$tmp/log.$i" && [ -s "$tmp/log.$i" ]; then
+            fetched="$fetched $arch:$state"
+        fi
+    done <"$tmp/builds.list"
+
+    # shellcheck disable=SC2144
+    ls "$tmp"/log.* >/dev/null 2>&1 || {
+        status warn
+        summary "all $n_builds build logs failed to fetch"
+        return 0
+    }
+
+    # 5. categorize. awk's associative-array keys persist across all input
+    #    files, so per-arch duplicate matches collapse for free.
+    #
+    # Categories:
+    #   S — dpkg-gencontrol undefined substvars       (dedup key: var+pkg)
+    #   P — dpkg-shlibdeps unresolvable plugin refs   (dedup key: symbol)
+    #   U — dpkg-shlibdeps "useless dependency"       (dedup key: path+lib)
+    #   D — dh_* warnings                             (dedup key: full line)
+    #   C — CMake Warning headers                     (dedup key: full line)
+    #
+    # No single quotes anywhere in awk_prog — required, since it's
+    # single-quoted in shell.
+    awk_prog='
+BEGIN {
+    s_n = 0; p_n = 0; u_n = 0; d_n = 0; c_n = 0
+    limit = 100
+}
+
+# 1. dpkg-gencontrol undefined substvar
+/dpkg-gencontrol: warning: .* substitution variable .* used, but is not defined/ {
+    match($0, /package [^:]+:/); pkg = substr($0, RSTART + 8, RLENGTH - 9)
+    match($0, /\$\{[^}]+\}/);    var = substr($0, RSTART, RLENGTH)
+    k = var SUBSEP pkg
+    if (!(k in subst)) {
+        subst[k] = 1; s_n++
+        varpkgs[var] = varpkgs[var] " " pkg
+    }
+    next
+}
+
+# 2. shlibdeps unresolvable plugin symbol
+/dpkg-shlibdeps: warning:.*unresolvable reference to symbol .*: it is probably a plugin/ {
+    match($0, /symbol [^ :]+/); sym = substr($0, RSTART + 7, RLENGTH - 7)
+    plug[sym]++; p_n++
+    next
+}
+
+# 3. shlibdeps useless dep
+/dpkg-shlibdeps: warning: package could avoid a useless dependency if .* was not linked against / {
+    if (match($0, /if [^ ]+ was not linked against [^ ]+/)) {
+        frag = substr($0, RSTART, RLENGTH)
+        n = split(frag, a, " ")
+        # a[1]=if a[2]=<path> a[3]=was a[4]=not a[5]=linked a[6]=against a[7]=<lib>
+        path = a[2]; lib = a[7]
+        k = path SUBSEP lib
+        if (!(k in use)) { use[k] = 1; u_n++ }
+    }
+    next
+}
+
+# 4. dh_* warning
+/^dh_[a-z_]+: warning:/ {
+    if (!($0 in dhw)) { dhw[$0] = 1; d_n++ }
+    next
+}
+
+# 5. CMake warning header
+/^CMake Warning at / {
+    if (!($0 in cmw)) { cmw[$0] = 1; c_n++ }
+    next
+}
+
+END {
+    pu = 0; for (s in plug) pu++
+    if (mode == "totals") {
+        printf "S=%d P=%dx%d U=%d D=%d C=%d\n", s_n, p_n, pu, u_n, d_n, c_n
+        exit 0
+    }
+
+    printf "=== undefined substvars (%d) ===\n", s_n
+    if (s_n == 0) print "(none)"
+    else {
+        i = 0
+        for (v in varpkgs) {
+            if (i++ >= limit) { printf "[... %d more omitted]\n", s_n - limit; break }
+            n = split(varpkgs[v], a, " "); seen = ""; out = ""
+            for (j = 1; j <= n; j++) {
+                if (a[j] == "") continue
+                if (index(seen, " " a[j] " ") == 0) {
+                    seen = seen " " a[j] " "
+                    out = out (out == "" ? "" : ", ") a[j]
+                }
+            }
+            printf "%-24s used by: %s\n", v, out
+        }
+    }
+    print ""
+
+    printf "=== shlibdeps: unresolvable plugin refs (%d total, %d unique symbol%s) ===\n", \
+        p_n, pu, (pu == 1 ? "" : "s")
+    if (p_n == 0) print "(none)"
+    else {
+        i = 0
+        for (s in plug) {
+            if (i++ >= limit) { printf "[... %d more omitted]\n", pu - limit; break }
+            printf "%-40s x %d (plugin architecture -- usually expected)\n", s, plug[s]
+        }
+    }
+    print ""
+
+    printf "=== shlibdeps: useless dependencies (%d unique) ===\n", u_n
+    if (u_n == 0) print "(none)"
+    else {
+        i = 0
+        for (k in use) {
+            if (i++ >= limit) { printf "[... %d more omitted]\n", u_n - limit; break }
+            split(k, p, SUBSEP)
+            printf "%-40s -> %s\n", p[1], p[2]
+        }
+    }
+    print ""
+
+    printf "=== dh_ warnings (%d unique) ===\n", d_n
+    if (d_n == 0) print "(none)"
+    else {
+        i = 0
+        for (m in dhw) {
+            if (i++ >= limit) { print "[... truncated]"; break }
+            print m
+        }
+    }
+    print ""
+
+    printf "=== CMake warnings (%d unique) ===\n", c_n
+    if (c_n == 0) print "(none)"
+    else {
+        i = 0
+        for (h in cmw) {
+            if (i++ >= limit) { print "[... truncated]"; break }
+            print h
+        }
+    }
+}
+'
+    echo "=== source ==="
+    echo "package: $pkg"
+    echo "series:  $series"
+    echo "fetched:$fetched"
+    echo
+
+    printf '%s' "$awk_prog" | awk -f - "$tmp"/log.*
+    totals=$(printf '%s' "$awk_prog" | awk -f - -v mode=totals "$tmp"/log.*)
+
+    if echo "$totals" | grep -qE '^S=0 P=0x0 U=0 D=0 C=0$'; then
+        status ok
+        summary "no build warnings across archs ($fetched)"
+        return 0
+    fi
+    status warn
+    summary "build warnings: $totals across archs ($fetched)"
+    hint "agent: for undefined substvars, verify debian/rules populates them (substvars files or dh_gencontrol -V); for useless shlibdeps, propose -Wl,--as-needed in debian/rules; plugin-symbol refs are usually expected on plugin architectures (LLVM etc.) -- sanity-check against known plugin ABI"
 }
 
 step_copyright_licensecheck() {
