@@ -174,15 +174,14 @@ step_lintian_source() {
             return 1
         }
     fi
-    cd ..
-    dsc=$(ls -1 -- *.dsc 2>/dev/null | head -n1)
-    [ -n "$dsc" ] || {
-        status fail
-        summary "no .dsc produced"
-        return 1
-    }
+    # Bare `lintian` reads debian/changelog from cwd and auto-locates the
+    # matching .changes in ../, ../build-area, or /var/cache/pbuilder/result.
+    # It is anchored to this package's exact name+version, so a sibling
+    # package's stale .dsc in the same parent (~/projects/debian/*) can't
+    # ever be picked by mistake. Staying in cwd also keeps every step after
+    # this one on the source tree, as they assume.
     rc=0
-    lintian -EviIL +pedantic "$dsc" || rc=$?
+    lintian -EviIL +pedantic || rc=$?
     # lintian: 0 clean, 1 had tags, >=2 internal error
     if [ "$rc" -ge 2 ]; then
         status fail
