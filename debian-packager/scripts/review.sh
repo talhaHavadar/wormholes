@@ -86,8 +86,21 @@ fetch_orig_quiet() {
 }
 
 # run_step <name> — wrap a step function call in begin/end markers.
+#
+# Pins cwd back to the source tree first: some upstream subprocesses
+# (uscan on multi-component watches, debuild-as-root) have been observed
+# to leak cwd upward, and every step_* below assumes cwd = source tree.
+# Emitting a warning marker when drift is detected preserves the signal
+# for whoever wants to fix the root cause upstream.
 run_step() {
     name=$1
+    if [ -n "${ISPKG_SRCDIR:-}" ] && [ "$PWD" != "$ISPKG_SRCDIR" ]; then
+        emit_warning "cwd drifted before step $name: was $PWD, resetting to $ISPKG_SRCDIR"
+        cd "$ISPKG_SRCDIR" || {
+            emit_error "cannot cd back to source dir $ISPKG_SRCDIR"
+            return 1
+        }
+    fi
     echo "ISPKG_STEP_BEGIN: $name"
     rc=0
     set +e

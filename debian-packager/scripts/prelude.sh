@@ -47,21 +47,26 @@ trap on_exit EXIT
 #   local: the runner already set cwd to the source tree (and contained mounts
 #          it), so there is nothing to do.
 acquire_source() {
-	[ "$1" = git ] || return 0
-	prefix=interstellar-build-
-	rm -rf -- "$prefix"* 2>/dev/null || true
-	d=$(cd "$(mktemp -d "${prefix}XXXXXX")" && pwd)
-	register_cleanup "$d"
-	echo "ISPKG_WORKSPACE=$d"
-	# Assemble the clone argv in a subshell so reusing the positional list does
-	# not clobber the tool args the caller still holds in "$@".
-	( repo=$2; ref=$3; depth=$4
-	  set -- clone
-	  [ -n "$ref" ] && set -- "$@" --branch "$ref"
-	  [ "${depth:-0}" -gt 0 ] 2>/dev/null && set -- "$@" --depth "$depth"
-	  exec git "$@" -- "$repo" "$d/pkg" )
-	mkdir -p "$d/build-area"
-	cd "$d/pkg"
+	if [ "$1" = git ]; then
+		prefix=interstellar-build-
+		rm -rf -- "$prefix"* 2>/dev/null || true
+		d=$(cd "$(mktemp -d "${prefix}XXXXXX")" && pwd)
+		register_cleanup "$d"
+		echo "ISPKG_WORKSPACE=$d"
+		# Assemble the clone argv in a subshell so reusing the positional list does
+		# not clobber the tool args the caller still holds in "$@".
+		( repo=$2; ref=$3; depth=$4
+		  set -- clone
+		  [ -n "$ref" ] && set -- "$@" --branch "$ref"
+		  [ "${depth:-0}" -gt 0 ] 2>/dev/null && set -- "$@" --depth "$depth"
+		  exec git "$@" -- "$repo" "$d/pkg" )
+		mkdir -p "$d/build-area"
+		cd "$d/pkg"
+	fi
+	# Anchor the source tree for later stages. Multi-step tools (review) use
+	# this to defensively cd back before each step, guarding against
+	# subprocesses that leak cwd (uscan/debuild have been observed to).
+	ISPKG_SRCDIR=$PWD
 }
 
 # is_snapshot_package reports whether the package uses the `snapshot` tool
