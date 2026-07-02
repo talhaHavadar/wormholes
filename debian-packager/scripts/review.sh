@@ -439,9 +439,23 @@ BEGIN {
     next
 }
 
-# 5. CMake warning header
+# 5. CMake warning block: header + following indented message lines.
+# getline consumes lines from the main input stream, so any warning that
+# begins immediately after (no blank line separating) would be lost — CMake
+# in practice always emits a trailing blank, so this is acceptable. Un-
+# indented lines like "Call Stack (most recent call first):" terminate the
+# block; the raw log still carries the stack if a reviewer needs it.
 /^CMake Warning at / {
-    if (!($0 in cmw)) { cmw[$0] = 1; c_n++ }
+    header = $0
+    block = $0
+    added = 0
+    while (added < 8 && (getline line) > 0) {
+        if (line !~ /^[[:space:]]/ && line != "") break
+        block = block "\n" line
+        added++
+        if (line ~ /^[[:space:]]*$/ && added > 1) break
+    }
+    if (!(header in cmw)) { cmw[header] = block; c_n++ }
     next
 }
 
@@ -512,7 +526,8 @@ END {
         i = 0
         for (h in cmw) {
             if (i++ >= limit) { print "[... truncated]"; break }
-            print h
+            print cmw[h]
+            print ""
         }
     }
 }
