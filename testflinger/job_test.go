@@ -204,3 +204,61 @@ func TestLastLine(t *testing.T) {
 		t.Fatalf("lastLine = %q", got)
 	}
 }
+
+type discardSink struct{}
+
+func (discardSink) Stdout(_ []byte) {}
+func (discardSink) Stderr(_ []byte) {}
+func (discardSink) SetExit(_ int)   {}
+
+// TestSSHFailWatcher covers the "signal the link dead" heuristic: exit 255
+// with an unreachable-host stderr fragment must trip; a plain non-zero remote
+// command must not.
+func TestSSHFailWatcher(t *testing.T) {
+	cases := []struct {
+		name   string
+		stderr string
+		exit   int
+		want   bool
+	}{
+		{"connection refused, exit 255", "ssh: connect to host 10.0.0.5 port 22: Connection refused\r\n", 255, true},
+		{"no route to host, exit 255", "ssh: connect to host 10.0.0.5 port 22: No route to host\r\n", 255, true},
+		{"connection timed out, exit 255", "ssh: connect to host 10.0.0.5 port 22: Connection timed out\r\n", 255, true},
+		{"reset by peer, exit 255", "packet_write_wait: Connection reset by peer\r\n", 255, true},
+		{"remote command failed, exit 1", "make: *** [Makefile:12: build] Error 1\r\n", 1, false},
+		{"connection refused but exit 0", "warn: connection refused (ignored)\r\n", 0, false},
+		{"exit 255 but stderr does not look like a network issue", "shell exited with 255\r\n", 255, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := &sshFailWatcher{sink: discardSink{}}
+			w.Stderr([]byte(tc.stderr))
+			w.SetExit(tc.exit)
+			if got := w.sshUnreachable(); got != tc.want {
+				t.Fatalf("sshUnreachable = %v; want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSSHFailWatcherBoundedTail asserts stderr accumulation is capped so a
+// chatty command cannot drive the watcher's memory footprint unbounded.
+func TestSSHFailWatcherBoundedTail(t *testing.T) {
+	w := &sshFailWatcher{sink: discardSink{}}
+	// Ten times the tail budget, all benign output.
+	blob := strings.Repeat("x", sshFailStderrTailBytes*10)
+	w.Stderr([]byte(blob))
+	if len(w.stderrTail) > sshFailStderrTailBytes {
+		t.Fatalf("stderrTail grew to %d bytes; want <= %d", len(w.stderrTail), sshFailStderrTailBytes)
+	}
+	// The unreachable marker at the very end of the stream must still be
+	// visible even after truncation, so a long build followed by ssh dying
+	// still trips the heuristic.
+	w2 := &sshFailWatcher{sink: discardSink{}}
+	w2.Stderr([]byte(strings.Repeat("x", sshFailStderrTailBytes)))
+	w2.Stderr([]byte("ssh: connect to host 10.0.0.5 port 22: Connection refused\r\n"))
+	w2.SetExit(255)
+	if !w2.sshUnreachable() {
+		t.Fatal("late connection-refused should still trip after long benign stderr")
+	}
+}

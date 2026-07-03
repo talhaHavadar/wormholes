@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/talhaHavadar/interstellar/pkg/wormhole"
@@ -16,6 +17,14 @@ const (
 	defaultReserveTimeout = 21600 // 6h, the unauthenticated maximum
 	defaultPollTimeout    = 120   // seconds a single `poll` is allowed to stream
 	defaultPollInterval   = 20    // seconds between poll attempts
+)
+
+// sshUnreachableRE matches stderr fragments that OpenSSH emits when it could
+// not reach the peer at all, as opposed to a real remote command failing.
+// Used to distinguish "the reservation is gone" from "my build script exited
+// 1", so we only signal the link dead in the former case.
+var sshUnreachableRE = regexp.MustCompile(
+	`(?i)connection refused|no route to host|connection timed out|host is down|network is unreachable|connection reset by peer|ssh_exchange_identification: connection closed|kex_exchange_identification|port 22: (?:connection|no route)|permission denied \(publickey`,
 )
 
 // config is the admin-supplied link configuration.
@@ -103,23 +112,118 @@ func openLink(ctx context.Context, req *wormhole.LinkRequest) (*wormhole.ActiveL
 		return nil, err
 	}
 
+	// The testflinger reservation itself expires after ReserveTimeoutSecs
+	// (that is the value we just submitted as reserve_data.timeout, and it
+	// is authoritative here: prepareJob always writes the config's value
+	// over the job_file's, and parseConfig always defaults it, so config
+	// and job cannot disagree by construction). Once the reservation
+	// expires the machine goes back to the pool and its IP may serve
+	// someone else's job. Two things then must not happen:
+	//   1. subsequent commands SSHing to `target` — the machine is not
+	//      ours anymore, so anything they do is undefined;
+	//   2. this session-manager link staying "up" — reusing it would just
+	//      queue up more of (1) on future tool calls.
+	//
+	// Died fires when either condition is detected: a deadline timer for
+	// (2), running from the point testflinger handed us the machine (so it
+	// fires no earlier than the reservation itself ends), and an SSH
+	// unreachable heuristic on every command for (1) — which also covers
+	// the reservation dying early, e.g. hardware fault or admin cancel.
+	died := make(chan struct{})
+	var diedOnce sync.Once
+	signalDied := func(reason string) {
+		diedOnce.Do(func() {
+			req.Logf("warn", "closing testflinger link: %s", reason)
+			close(died)
+		})
+	}
+
+	watchDone := make(chan struct{})
+	go func() {
+		t := time.NewTimer(time.Duration(cfg.ReserveTimeoutSecs) * time.Second)
+		defer t.Stop()
+		select {
+		case <-t.C:
+			signalDied("reservation deadline reached")
+		case <-watchDone:
+		}
+	}()
+
 	run := func(ctx context.Context, cmd wormhole.Command, sink wormhole.ExecSink) error {
-		return runOverSSH(ctx, orch, cfg, target, cmd, sink)
+		w := &sshFailWatcher{sink: sink}
+		err := runOverSSH(ctx, orch, cfg, target, cmd, w)
+		if w.sshUnreachable() {
+			signalDied("ssh to reserved machine unreachable — reservation likely gone")
+		}
+		return err
 	}
 	desc, stop, err := wormhole.ServeExecEndpoint(wormhole.LinkSocketDir(req.LinkID), run)
 	if err != nil {
+		close(watchDone)
 		cancelJob(cfg, orch, jobID)
 		_ = orch.Close()
 		return nil, err
 	}
 	return &wormhole.ActiveLink{
 		Descriptor: desc,
+		Died:       died,
 		Close: func() error {
+			close(watchDone)
 			_ = stop()
 			cancelJob(cfg, orch, jobID)
 			return orch.Close()
 		},
 	}, nil
+}
+
+// sshFailWatcher wraps an ExecSink and keeps a bounded tail of stderr so run
+// can decide, after the command finishes, whether the failure was ssh giving
+// up on the peer (link dead) rather than the remote command exiting non-zero.
+type sshFailWatcher struct {
+	sink wormhole.ExecSink
+
+	mu         sync.Mutex
+	exit       int
+	hasExit    bool
+	stderrTail []byte
+}
+
+const sshFailStderrTailBytes = 4096
+
+func (w *sshFailWatcher) Stdout(p []byte) { w.sink.Stdout(p) }
+func (w *sshFailWatcher) Stderr(p []byte) {
+	w.mu.Lock()
+	// Keep only the last sshFailStderrTailBytes of stderr so a chatty command
+	// can't blow memory. The connection-refused/no-route messages are always
+	// near the end of stderr.
+	buf := append(w.stderrTail, p...)
+	if len(buf) > sshFailStderrTailBytes {
+		buf = buf[len(buf)-sshFailStderrTailBytes:]
+	}
+	w.stderrTail = buf
+	w.mu.Unlock()
+	w.sink.Stderr(p)
+}
+func (w *sshFailWatcher) SetExit(code int) {
+	w.mu.Lock()
+	w.exit = code
+	w.hasExit = true
+	w.mu.Unlock()
+	w.sink.SetExit(code)
+}
+
+// sshUnreachable reports whether the failure looks like ssh could not reach
+// the peer at all (dead reservation), rather than the remote command exiting
+// non-zero (real command failure). Exit 255 is ssh's own "something went
+// wrong before/at connection setup" code; combined with an unreachable-host
+// stderr fragment it is a strong signal the reservation is gone.
+func (w *sshFailWatcher) sshUnreachable() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if !w.hasExit || w.exit != 255 {
+		return false
+	}
+	return sshUnreachableRE.Match(w.stderrTail)
 }
 
 // reserve submits the job and waits for the reserved machine's SSH details.

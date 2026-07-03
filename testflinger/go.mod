@@ -3,7 +3,7 @@ module github.com/talhaHavadar/wormholes/testflinger
 go 1.26.4
 
 require (
-	github.com/talhaHavadar/interstellar v0.6.0
+	github.com/talhaHavadar/interstellar v0.7.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
