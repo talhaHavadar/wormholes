@@ -110,6 +110,60 @@ run_step() {
 	echo "ISPKG_STEP_END: $name exit=$rc"
 }
 
+# ── parallel lane infrastructure ───────────────────────────────────────
+#
+# Some steps run off the main line to overlap their latency with the source
+# build. The Go parser (parseReviewSteps) rebuilds steps from one merged
+# stream and treats a second ISPKG_STEP_BEGIN before the matching END as a
+# crashed step, so concurrent steps must NOT write to the shared stdout.
+# Each backgrounded step instead writes its whole BEGIN…END block to a
+# private buffer file; the buffers are cat'd out — each already a complete
+# block — once their producers have been waited on.
+
+# run_step_buffered <name> <buffer-file> — like run_step, but the step's
+# whole block is redirected into <buffer-file>. Runs in a subshell so its
+# cwd changes and set -e toggling stay local, and points TMPDIR at the
+# parallel scratch root so any mktemp the step does lands there:
+# register_cleanup mutates a shell variable that never escapes a `&`
+# subshell, so those temp dirs would otherwise leak past on_exit. Meant to
+# be backgrounded with `&`.
+run_step_buffered() {
+	_name=$1
+	_buf=$2
+	(
+		[ -n "${ISPKG_SRCDIR:-}" ] && cd "$ISPKG_SRCDIR" 2>/dev/null || true
+		export TMPDIR="$ISPKG_PAR_ROOT"
+		echo "ISPKG_STEP_BEGIN: $_name"
+		_rc=0
+		set +e
+		"step_$_name"
+		_rc=$?
+		set -e
+		echo "ISPKG_STEP_END: $_name exit=$_rc"
+	) >"$_buf" 2>&1
+}
+
+# par_wait <pid...> — join background steps. A step encodes its own outcome
+# in its buffered exit= marker, so a non-zero job status is not fatal here.
+par_wait() {
+	for _p in "$@"; do wait "$_p" 2>/dev/null || true; done
+}
+
+# par_flush <buffer-file...> — emit finished step blocks to stdout in order.
+par_flush() {
+	for _f in "$@"; do
+		if [ -f "$_f" ]; then cat "$_f"; fi
+	done
+}
+
+# in_list <name> <space-separated-list> — word-membership test.
+in_list() {
+	case " $2 " in
+	*" $1 "*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
 # ── step implementations (cwd = source tree) ───────────────────────────
 
 step_watch() {
@@ -917,9 +971,71 @@ for s in $ENABLED_STEPS; do
 	esac
 done
 
+# ── lane scheduling ────────────────────────────────────────────────────
+# Steps split across three lanes to overlap the two slow, I/O-bound classes
+# with the source build:
+#
+#   NETWORK_LANE   isolated + network-bound (own mktemp; the only tree file
+#                  they read is debian/changelog). Safe for the whole review,
+#                  including alongside debuild — this is where a PPA review's
+#                  download time hides under the build.
+#   COPYRIGHT_LANE read-only scans of the source tree, run concurrently with
+#                  each other. Because they read the tree, they are joined
+#                  BEFORE the build lane, which mutates it (debuild -S runs
+#                  dh clean).
+#   BUILD_LANE     watch + lintian_source: fetch orig, build, lint. Mutates
+#                  the tree and ../ and stays strictly serial.
+#
+# Every other enabled step is a cheap grep/awk check; those run inline and
+# serial, before the build, since they read the tree too.
+NETWORK_LANE="lintian_binary ppa_build_warnings"
+COPYRIGHT_LANE="copyright_licensecheck copyright_lrc copyright_holders"
+BUILD_LANE="watch lintian_source"
+
+ISPKG_PAR_ROOT=$(mktemp -d)
+register_cleanup "$ISPKG_PAR_ROOT"
+
+# 1. launch the background lanes (active members only); both run while the
+#    inline checks and the build proceed.
+network_pids=
+network_bufs=
+copyright_pids=
+copyright_bufs=
 for s in $final; do
+	in_list "$s" "$NETWORK_LANE" || continue
+	buf="$ISPKG_PAR_ROOT/buf.$s"
+	run_step_buffered "$s" "$buf" &
+	network_pids="$network_pids $!"
+	network_bufs="$network_bufs $buf"
+done
+for s in $final; do
+	in_list "$s" "$COPYRIGHT_LANE" || continue
+	buf="$ISPKG_PAR_ROOT/buf.$s"
+	run_step_buffered "$s" "$buf" &
+	copyright_pids="$copyright_pids $!"
+	copyright_bufs="$copyright_bufs $buf"
+done
+
+# 2. cheap read-only checks, inline and serial (must precede the build).
+for s in $final; do
+	in_list "$s" "$NETWORK_LANE $COPYRIGHT_LANE $BUILD_LANE" && continue
 	run_step "$s"
 done
+
+# 3. join the tree-reading copyright lane before the build touches the tree,
+#    then emit its blocks.
+par_wait $copyright_pids
+par_flush $copyright_bufs
+
+# 4. build lane, inline and serial (mutates the tree + ../).
+for s in $BUILD_LANE; do
+	in_list "$s" "$final" || continue
+	run_step "$s"
+done
+
+# 5. the network lane overlapped everything above; join and emit it last.
+par_wait $network_pids
+par_flush $network_bufs
 
 # the runner completed; per-step pass/fail is conveyed in the step markers.
 _RESULT=ok
