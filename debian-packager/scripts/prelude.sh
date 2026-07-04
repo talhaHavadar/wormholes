@@ -18,7 +18,7 @@ set -eu
 _CLEANUP=
 _RESULT=fail
 
-emit_error()   { echo "ISPKG_ERROR: $*" >&2; }
+emit_error() { echo "ISPKG_ERROR: $*" >&2; }
 emit_warning() { echo "ISPKG_WARNING: $*" >&2; }
 
 # register_cleanup <dir> — mark a temp dir for removal on a clean exit.
@@ -55,11 +55,15 @@ acquire_source() {
 		echo "ISPKG_WORKSPACE=$d"
 		# Assemble the clone argv in a subshell so reusing the positional list does
 		# not clobber the tool args the caller still holds in "$@".
-		( repo=$2; ref=$3; depth=$4
-		  set -- clone
-		  [ -n "$ref" ] && set -- "$@" --branch "$ref"
-		  [ "${depth:-0}" -gt 0 ] 2>/dev/null && set -- "$@" --depth "$depth"
-		  exec git "$@" -- "$repo" "$d/pkg" )
+		(
+			repo=$2
+			ref=$3
+			depth=$4
+			set -- clone
+			[ -n "$ref" ] && set -- "$@" --branch "$ref"
+			[ "${depth:-0}" -gt 0 ] 2>/dev/null && set -- "$@" --depth "$depth"
+			exec git "$@" -- "$repo" "$d/pkg"
+		)
 		mkdir -p "$d/build-area"
 		cd "$d/pkg"
 	fi
@@ -85,7 +89,7 @@ is_snapshot_package() {
 	[ -f debian/changelog ] || return 1
 	ver=$(dpkg-parsechangelog -S Version 2>/dev/null) || return 1
 	case "$ver" in
-		*~git[0-9]*|*+git[0-9]*) return 0 ;;
+	*~git[0-9]* | *+git[0-9]*) return 0 ;;
 	esac
 	return 1
 }
@@ -99,7 +103,10 @@ is_snapshot_package() {
 #                             monorepo-subdir or multi-component origs).
 #                             Requires `snapshot` on the builder PATH.
 #                             See is_snapshot_package for the detection.
-#   otherwise              -> uscan --download-current-version
+#   otherwise              -> `gbp export-orig` first (regenerate the orig from
+#                             the pristine-tar/upstream branch, no network),
+#                             falling back to uscan --download-current-version
+#                             when gbp is absent or has nothing to export.
 #
 # A failure is relayed clearly via ISPKG_ERROR instead of surfacing later as a
 # confusing dpkg-source error.
@@ -114,8 +121,16 @@ fetch_orig() {
 		emit_error "snapshot orig failed (could not regenerate orig from upstream/pristine-tar)"
 		return 1
 	fi
+	# Prefer git-buildpackage's orig export for git-maintained packages: it
+	# rebuilds the orig from the pristine-tar/upstream branch with no network
+	# round-trip. Only attempt it when gbp is installed, and fall back to uscan
+	# when it has nothing to export (no pristine-tar data, no upstream branch).
+	if command -v gbp >/dev/null 2>&1; then
+		gbp export-orig && return 0
+		emit_warning "gbp export-orig produced no orig; falling back to uscan"
+	fi
 	uscan --download-current-version && return 0
-	emit_error "orig tarball fetch failed (uscan --download-current-version)"
+	emit_error "orig tarball fetch failed (gbp export-orig and uscan --download-current-version)"
 	return 1
 }
 
