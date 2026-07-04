@@ -83,6 +83,10 @@ fetch_orig_quiet() {
 		snapshot orig
 		return $?
 	fi
+	if command -v gbp >/dev/null 2>&1; then
+		gbp export-orig && return 0
+		emit_warning "gbp export-orig produced no orig; falling back to uscan"
+	fi
 	uscan --download-current-version
 }
 
