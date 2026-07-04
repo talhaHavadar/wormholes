@@ -224,6 +224,16 @@ func parseReviewSteps(out string) []reviewStep {
 		if len(logLines) > 0 {
 			current.LogTail = tailBytes(logLines, maxStepLogBytes)
 		}
+		// A failing step must never report an empty summary — the digest and
+		// the gateway logs both lean on it (a live run surfaced `step watch
+		// failed: ` with nothing after the colon).
+		if current.Status == "fail" && current.Summary == "" {
+			if exit == -1 {
+				current.Summary = "step did not complete (interrupted before its END marker) — see log_tail"
+			} else {
+				current.Summary = fmt.Sprintf("exited %d without a summary — see log_tail", exit)
+			}
+		}
 		steps = append(steps, *current)
 		current = nil
 		logLines = nil
@@ -340,6 +350,86 @@ func findReviewStep(steps []reviewStep, name string) *reviewStep {
 		}
 	}
 	return nil
+}
+
+// Per-status LogTail budgets applied to the review report AFTER parsing. The
+// parse-time cap (maxStepLogBytes) protects the gRPC transport; these protect
+// the consumer: MCP clients truncate large tool results (a live run returned
+// 265 KB and the agent's harness cut it after ~6 steps), so failures get the
+// most room and healthy steps keep only their tail. Trims are tail-preserving
+// (tailBytes), so steps should emit their most valuable summary output LAST.
+const (
+	trimFailLogBytes = 16 * 1024
+	trimWarnLogBytes = 8 * 1024
+	trimOKLogBytes   = 2 * 1024
+)
+
+// trimStepLogs applies the per-status budgets in place. Skipped steps carry
+// their whole story in the summary, so their logs are dropped entirely.
+func trimStepLogs(steps []reviewStep) {
+	for i := range steps {
+		var budget int
+		switch steps[i].Status {
+		case "fail":
+			budget = trimFailLogBytes
+		case "ok":
+			budget = trimOKLogBytes
+		case "skipped":
+			budget = 0
+		default: // warn, and anything unexpected
+			budget = trimWarnLogBytes
+		}
+		if budget == 0 {
+			steps[i].LogTail = ""
+			continue
+		}
+		if len(steps[i].LogTail) > budget {
+			steps[i].LogTail = tailBytes(strings.Split(steps[i].LogTail, "\n"), budget)
+		}
+	}
+}
+
+// severityRank orders statuses for the report: failures first, so a consumer
+// that truncates the result still sees what broke before the cut.
+func severityRank(status string) int {
+	switch status {
+	case "fail":
+		return 0
+	case "warn":
+		return 1
+	case "ok":
+		return 3
+	case "skipped":
+		return 4
+	default:
+		return 2 // unknown: after the known-bad, before the known-good
+	}
+}
+
+// sortStepsBySeverity reorders steps fail → warn → ok → skipped, keeping
+// execution order within each class.
+func sortStepsBySeverity(steps []reviewStep) {
+	sort.SliceStable(steps, func(i, j int) bool {
+		return severityRank(steps[i].Status) < severityRank(steps[j].Status)
+	})
+}
+
+// stepDigest returns compact "name: summary" lines for every step with the
+// given status — the truncation-proof failure record emitted ahead of the
+// steps array.
+func stepDigest(steps []reviewStep, status string) []string {
+	var out []string
+	for _, s := range steps {
+		if s.Status != status {
+			continue
+		}
+		if s.Summary != "" {
+			out = append(out, s.Name+": "+s.Summary)
+		} else {
+			out = append(out, s.Name)
+		}
+	}
+	return out
 }
 
 // overallReviewStatus aggregates per-step results: fail dominates, then warn,

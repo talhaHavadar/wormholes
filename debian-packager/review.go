@@ -14,9 +14,15 @@ type reviewInput struct {
 }
 
 type reviewResult struct {
-	OverallStatus string       `json:"overall_status"` // ok | warn | fail
-	Steps         []reviewStep `json:"steps"`
-	Workspace     string       `json:"workspace,omitempty"`
+	OverallStatus string `json:"overall_status"` // ok | warn | fail
+	// FailedSteps/WarnedSteps are a compact "name: summary" digest, emitted
+	// BEFORE the steps array on purpose: MCP clients truncate large tool
+	// results from the end, and a live run showed an agent losing exactly
+	// the failing steps that way. Even a brutal prefix keeps the verdict.
+	FailedSteps []string     `json:"failed_steps,omitempty"`
+	WarnedSteps []string     `json:"warned_steps,omitempty"`
+	Steps       []reviewStep `json:"steps"`
+	Workspace   string       `json:"workspace,omitempty"`
 }
 
 // review runs the Debian package review checklist on the source tree. Each
@@ -62,8 +68,14 @@ func review(ctx context.Context, call *wormhole.Call, in reviewInput) (any, erro
 			call.Logf("info", "step %s warned: %s", s.Name, s.Summary)
 		}
 	}
+	// Shape the report for an LLM consumer whose harness may truncate it:
+	// budget the log tails by severity and put failures first.
+	trimStepLogs(steps)
+	sortStepsBySeverity(steps)
 	return reviewResult{
 		OverallStatus: overallReviewStatus(steps),
+		FailedSteps:   stepDigest(steps, "fail"),
+		WarnedSteps:   stepDigest(steps, "warn"),
 		Steps:         steps,
 		Workspace:     parseWorkspace(out),
 	}, nil

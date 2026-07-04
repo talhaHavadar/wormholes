@@ -193,9 +193,13 @@ ISPKG_STEP_END: control_wrap_sort exit=1
 		t.Errorf("step 2 status = %q, want skipped", steps[2].Status)
 	}
 
-	// last step: no STATUS marker, non-zero exit → defaults to fail
+	// last step: no STATUS marker, non-zero exit → defaults to fail, and the
+	// parser synthesizes a summary so a failing step never reports empty.
 	if steps[3].Status != "fail" || steps[3].Exit != 1 {
 		t.Errorf("step 3 = %+v (expected fail/exit=1)", steps[3])
+	}
+	if !strings.Contains(steps[3].Summary, "without a summary") {
+		t.Errorf("step 3 summary = %q (expected synthesized default)", steps[3].Summary)
 	}
 }
 
@@ -214,6 +218,9 @@ ISPKG_STEP_END: lintian_source exit=0
 	}
 	if steps[0].Name != "watch" || steps[0].Status != "fail" || steps[0].Exit != -1 {
 		t.Errorf("partial step = %+v (expected fail/exit=-1)", steps[0])
+	}
+	if !strings.Contains(steps[0].Summary, "did not complete") {
+		t.Errorf("partial step summary = %q (expected synthesized default)", steps[0].Summary)
 	}
 	if steps[1].Name != "lintian_source" || steps[1].Status != "ok" {
 		t.Errorf("second step = %+v", steps[1])
@@ -273,6 +280,85 @@ func TestParseReviewStepsCapsTotalBytes(t *testing.T) {
 	}
 	if strings.Contains(steps[0].LogTail, "line000 ") {
 		t.Fatalf("earliest line should have been dropped")
+	}
+}
+
+func TestTrimStepLogs(t *testing.T) {
+	big := strings.Repeat("padding line of log output\n", 3000) // ~80 KB
+	steps := []reviewStep{
+		{Status: "fail", LogTail: big + "FAIL_TAIL"},
+		{Status: "warn", LogTail: big + "WARN_TAIL"},
+		{Status: "ok", LogTail: big + "OK_TAIL"},
+		{Status: "skipped", LogTail: "anything at all"},
+	}
+	trimStepLogs(steps)
+	cases := []struct {
+		i      int
+		budget int
+		suffix string
+	}{
+		{0, trimFailLogBytes, "FAIL_TAIL"},
+		{1, trimWarnLogBytes, "WARN_TAIL"},
+		{2, trimOKLogBytes, "OK_TAIL"},
+	}
+	for _, c := range cases {
+		got := steps[c.i].LogTail
+		// tailBytes adds a short truncation header on top of the kept tail.
+		if len(got) > c.budget+100 {
+			t.Errorf("step %d: %d bytes > budget %d", c.i, len(got), c.budget)
+		}
+		if !strings.HasSuffix(got, c.suffix) {
+			t.Errorf("step %d: tail dropped — %q missing", c.i, c.suffix)
+		}
+		if !strings.Contains(got, "truncated") {
+			t.Errorf("step %d: missing truncation header", c.i)
+		}
+	}
+	if steps[3].LogTail != "" {
+		t.Errorf("skipped step kept a log tail: %q", steps[3].LogTail)
+	}
+	// Under-budget logs pass through untouched.
+	small := []reviewStep{{Status: "ok", LogTail: "short"}}
+	trimStepLogs(small)
+	if small[0].LogTail != "short" {
+		t.Errorf("small log modified: %q", small[0].LogTail)
+	}
+}
+
+func TestSortStepsBySeverity(t *testing.T) {
+	steps := []reviewStep{
+		{Name: "a", Status: "ok"},
+		{Name: "b", Status: "fail"},
+		{Name: "c", Status: "skipped"},
+		{Name: "d", Status: "warn"},
+		{Name: "e", Status: "fail"},
+	}
+	sortStepsBySeverity(steps)
+	var order []string
+	for _, s := range steps {
+		order = append(order, s.Name)
+	}
+	// fail first (b before e: stable within class), then warn, ok, skipped.
+	want := []string{"b", "e", "d", "a", "c"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Fatalf("order = %v, want %v", order, want)
+		}
+	}
+}
+
+func TestStepDigest(t *testing.T) {
+	steps := []reviewStep{
+		{Name: "watch", Status: "fail", Summary: "uscan --report failed (exit 8)"},
+		{Name: "symbols", Status: "ok", Summary: "symbols files present"},
+		{Name: "nosummary", Status: "fail"},
+	}
+	got := stepDigest(steps, "fail")
+	if len(got) != 2 || got[0] != "watch: uscan --report failed (exit 8)" || got[1] != "nosummary" {
+		t.Errorf("digest = %v", got)
+	}
+	if d := stepDigest(steps, "warn"); d != nil {
+		t.Errorf("expected no warn digest, got %v", d)
 	}
 }
 

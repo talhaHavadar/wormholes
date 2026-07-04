@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"regexp"
 	"strings"
@@ -63,6 +64,32 @@ func TestReviewStepsMatchEnabledList(t *testing.T) {
 		if !listed[f] {
 			t.Errorf("scripts/review/steps/%s.sh exists but is not in ENABLED_STEPS", f)
 		}
+	}
+}
+
+// TestReviewResultJSONOrder pins the field order the truncation-proofing
+// relies on: MCP clients cut large tool results from the END, so the
+// failed/warned digest must serialize before the steps array.
+func TestReviewResultJSONOrder(t *testing.T) {
+	b, err := json.Marshal(reviewResult{
+		OverallStatus: "fail",
+		FailedSteps:   []string{"watch: uscan failed"},
+		WarnedSteps:   []string{"signed_tags: no pgp verification"},
+		Steps:         []reviewStep{{Name: "watch", Status: "fail"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	iStatus := strings.Index(s, `"overall_status"`)
+	iFailed := strings.Index(s, `"failed_steps"`)
+	iWarned := strings.Index(s, `"warned_steps"`)
+	iSteps := strings.Index(s, `"steps"`)
+	if iStatus < 0 || iFailed < 0 || iWarned < 0 || iSteps < 0 {
+		t.Fatalf("missing fields in %s", s)
+	}
+	if !(iStatus < iFailed && iFailed < iWarned && iWarned < iSteps) {
+		t.Errorf("digest fields must precede steps: %s", s)
 	}
 }
 

@@ -40,5 +40,13 @@ step_watch() {
 		summary "uscan not installed (devscripts)"
 		return 1
 	}
-	uscan --watchfile debian/watch --verbose --report --no-download
+	rc=0
+	uscan --watchfile debian/watch --verbose --report --no-download || rc=$?
+	if [ "$rc" -ne 0 ]; then
+		status fail
+		summary "uscan --report failed (exit $rc) — watch file broken or upstream unreachable (see output above)"
+		return "$rc"
+	fi
+	status ok
+	summary "uscan watch report generated (see output above)"
 }
