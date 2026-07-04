@@ -9,11 +9,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// prepareJob builds the Testflinger job to submit. The optional base YAML (a
-// job file) is the fallback; the config's direct fields are overlaid on top
-// with priority. It also ensures a reserve_data block with ssh keys and a
-// timeout, then validates the minimum a reserve job needs.
-func prepareJob(base []byte, cfg config) ([]byte, error) {
+// prepareJobDoc builds the effective Testflinger job document. The optional
+// base YAML (a job file) is the fallback; the config's direct fields are
+// overlaid on top with priority. It also ensures a reserve_data block with
+// ssh keys and a timeout, then validates the minimum a reserve job needs.
+func prepareJobDoc(base []byte, cfg config) (map[string]any, error) {
 	var doc map[string]any
 	if len(base) > 0 {
 		if err := yaml.Unmarshal(base, &doc); err != nil {
@@ -64,7 +64,46 @@ func prepareJob(base []byte, cfg config) ([]byte, error) {
 	}
 	doc["reserve_data"] = rd
 
+	return doc, nil
+}
+
+// prepareJob renders the effective job as YAML, ready to pipe to submit.
+func prepareJob(base []byte, cfg config) ([]byte, error) {
+	doc, err := prepareJobDoc(base, cfg)
+	if err != nil {
+		return nil, err
+	}
 	return yaml.Marshal(doc)
+}
+
+// marshalJob renders a prepared job doc as YAML.
+func marshalJob(doc map[string]any) ([]byte, error) {
+	return yaml.Marshal(doc)
+}
+
+// jobSpec is the part of a job that identifies "the machine we want", used
+// for queue pre-flight and for matching adoptable reservations.
+type jobSpec struct {
+	Queue         string
+	ProvisionData map[string]any
+	SSHKeys       []string
+}
+
+// specFromJobDoc extracts the identifying fields from a prepared job doc.
+func specFromJobDoc(doc map[string]any) jobSpec {
+	spec := jobSpec{}
+	spec.Queue, _ = doc["job_queue"].(string)
+	spec.ProvisionData, _ = doc["provision_data"].(map[string]any)
+	if rd, ok := doc["reserve_data"].(map[string]any); ok {
+		if keys, ok := rd["ssh_keys"].([]any); ok {
+			for _, k := range keys {
+				if s, ok := k.(string); ok {
+					spec.SSHKeys = append(spec.SSHKeys, s)
+				}
+			}
+		}
+	}
+	return spec
 }
 
 var jobIDRE = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
