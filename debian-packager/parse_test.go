@@ -276,6 +276,34 @@ func TestParseReviewStepsCapsTotalBytes(t *testing.T) {
 	}
 }
 
+func TestCutBuildWarningsBlock(t *testing.T) {
+	out := "sbuild: info\ndpkg-deb: building\nISPKG_STEP_BEGIN: build_warnings\n=== build log: x.build ===\nreport line\nISPKG_STEP_STATUS: warn\nISPKG_STEP_END: build_warnings exit=0\ntrailing stderr line\n"
+	got := cutBuildWarningsBlock(out)
+	want := "sbuild: info\ndpkg-deb: building\ntrailing stderr line\n"
+	if got != want {
+		t.Errorf("cut = %q, want %q", got, want)
+	}
+	// No block → unchanged.
+	if got := cutBuildWarningsBlock("plain build log\n"); got != "plain build log\n" {
+		t.Errorf("no-block input changed: %q", got)
+	}
+	// Unterminated block (shell died mid-analysis) → left in place.
+	partial := "log\nISPKG_STEP_BEGIN: build_warnings\nhalf a report\n"
+	if got := cutBuildWarningsBlock(partial); got != partial {
+		t.Errorf("unterminated block changed: %q", got)
+	}
+}
+
+func TestFindReviewStep(t *testing.T) {
+	steps := []reviewStep{{Name: "watch"}, {Name: "build_warnings", Status: "warn"}}
+	if s := findReviewStep(steps, "build_warnings"); s == nil || s.Status != "warn" {
+		t.Errorf("findReviewStep = %+v", s)
+	}
+	if s := findReviewStep(steps, "nope"); s != nil {
+		t.Errorf("expected nil, got %+v", s)
+	}
+}
+
 func TestOverallReviewStatus(t *testing.T) {
 	cases := []struct {
 		name  string

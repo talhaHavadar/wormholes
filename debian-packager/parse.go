@@ -318,6 +318,30 @@ func tailBytes(lines []string, maxBytes int) string {
 	return fmt.Sprintf("[… %d earlier line(s) truncated]\n", dropped) + body
 }
 
+// buildWarningsBlockRE matches the standalone build_warnings step block the
+// build tool bodies (build-binary.sh, build-source.sh) emit after a
+// successful build, through the end of its END-marker line.
+var buildWarningsBlockRE = regexp.MustCompile(`(?ms)^ISPKG_STEP_BEGIN: build_warnings$.*?^ISPKG_STEP_END: build_warnings[^\n]*\n?`)
+
+// cutBuildWarningsBlock removes the build_warnings block from out so the
+// tool-level LogTail keeps showing the end of the build itself instead of a
+// report that is already returned as a structured field. An unterminated
+// block (the shell died mid-analysis) is left in place — the tail is then the
+// best record of what happened.
+func cutBuildWarningsBlock(out string) string {
+	return buildWarningsBlockRE.ReplaceAllString(out, "")
+}
+
+// findReviewStep returns the first parsed step with the given name, or nil.
+func findReviewStep(steps []reviewStep, name string) *reviewStep {
+	for i := range steps {
+		if steps[i].Name == name {
+			return &steps[i]
+		}
+	}
+	return nil
+}
+
 // overallReviewStatus aggregates per-step results: fail dominates, then warn,
 // then ok. Skipped steps don't move the needle.
 func overallReviewStatus(steps []reviewStep) string {

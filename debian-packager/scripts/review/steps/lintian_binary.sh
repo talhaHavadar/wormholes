@@ -1,0 +1,52 @@
+# shellcheck shell=sh   # fragment: assembled and run via `sh -c` (see source.go)
+step_lintian_binary() {
+	if [ -z "$ppa" ]; then
+		status skipped
+		summary "no ppa argument — pass ppa=owner/name to lint prebuilt binaries"
+		return 0
+	fi
+	have lintian || {
+		status fail
+		summary "lintian not installed"
+		return 1
+	}
+	have pull-ppa-debs || {
+		status fail
+		summary "pull-ppa-debs not installed (ubuntu-dev-tools)"
+		return 1
+	}
+	pkg=$(dpkg-parsechangelog -S Source 2>/dev/null) || {
+		status fail
+		summary "dpkg-parsechangelog failed"
+		return 1
+	}
+	series=$(dpkg-parsechangelog -S Distribution 2>/dev/null)
+	art=$(mktemp -d)
+	register_cleanup "$art"
+	(cd "$art" && pull-ppa-debs --ppa "${ppa#ppa:}" "$pkg" "$series") ||
+		{
+			status fail
+			summary "pull-ppa-debs failed for $pkg/$series from $ppa"
+			return 1
+		}
+	debs=$(ls -1 -- "$art"/*.deb 2>/dev/null)
+	if [ -z "$debs" ]; then
+		status warn
+		summary "no .deb pulled from $ppa for $pkg/$series (not built yet?)"
+		return 0
+	fi
+	rc=0
+	# shellcheck disable=SC2086
+	lintian -EviIL +pedantic $debs || rc=$?
+	if [ "$rc" -ge 2 ]; then
+		status fail
+		summary "lintian failed (exit $rc)"
+		return "$rc"
+	elif [ "$rc" -eq 1 ]; then
+		status warn
+		summary "lintian reported tags on binary packages"
+		return 0
+	fi
+	status ok
+	summary "binary lintian clean"
+}

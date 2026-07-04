@@ -36,8 +36,14 @@ type buildResult struct {
 	Changes   string          `json:"changes,omitempty"`
 	Artifacts []string        `json:"artifacts"`
 	Lintian   *lintianSummary `json:"lintian,omitempty"`
-	Workspace string          `json:"workspace,omitempty"` // git builds: the temp clone dir (removed on success, kept on failure)
-	LogTail   string          `json:"log_tail,omitempty"`
+	// BuildWarnings is the categorized warning analysis of the build log
+	// (the sbuild .build file for binary builds, the console capture for
+	// source builds): status ok/warn/skipped, a totals summary, and the full
+	// deduped report in LogTail. Same categories as review's
+	// ppa_build_warnings step.
+	BuildWarnings *reviewStep `json:"build_warnings,omitempty"`
+	Workspace     string      `json:"workspace,omitempty"` // git builds: the temp clone dir (removed on success, kept on failure)
+	LogTail       string      `json:"log_tail,omitempty"`
 }
 
 func buildBinaryPackage(ctx context.Context, call *wormhole.Call, in buildBinaryInput) (any, error) {
@@ -59,7 +65,9 @@ func buildBinaryPackage(ctx context.Context, call *wormhole.Call, in buildBinary
 	}
 	call.Logf("info", "building binary package from %s", in.Source)
 	call.Progress(-1, "running sbuild")
+	stop := startHeartbeat(call, "sbuild", heartbeatInterval)
 	res, err := r.Run(ctx, pipelineCommand(buildBinaryBody, in.Source, in.Depth, toolArgs...))
+	stop()
 	if err != nil {
 		return nil, err
 	}
@@ -70,16 +78,34 @@ func buildBinaryPackage(ctx context.Context, call *wormhole.Call, in buildBinary
 	for _, w := range warningMarkers(out) {
 		call.Logf("warn", "%s", w)
 	}
+	return finishBuildResult(call, res.ExitCode, out), nil
+}
+
+// finishBuildResult assembles the buildResult both build tools share from
+// their combined output: artifacts (plus the .changes pick), the
+// build_warnings step, and a log tail that keeps more lines for failures —
+// a failed build's console tail is the only diagnostics that crossed the
+// wire, since the scripts cap their own output.
+func finishBuildResult(call *wormhole.Call, exitCode int, out string) buildResult {
+	buildWarnings := findReviewStep(parseReviewSteps(out), "build_warnings")
+	if buildWarnings != nil && buildWarnings.Status == "warn" {
+		call.Logf("warn", "%s", buildWarnings.Summary)
+	}
 	artifacts := findArtifacts(out)
+	tailLines := 60
+	if exitCode != 0 {
+		tailLines = 200
+	}
 	return buildResult{
-		Success:   res.ExitCode == 0,
-		ExitCode:  res.ExitCode,
-		Changes:   pickExt(artifacts, ".changes"),
-		Artifacts: artifacts,
-		Lintian:   parseLintian(out),
-		Workspace: parseWorkspace(out),
-		LogTail:   tail(out, 60),
-	}, nil
+		Success:       exitCode == 0,
+		ExitCode:      exitCode,
+		Changes:       pickExt(artifacts, ".changes"),
+		Artifacts:     artifacts,
+		Lintian:       parseLintian(out),
+		BuildWarnings: buildWarnings,
+		Workspace:     parseWorkspace(out),
+		LogTail:       tail(cutBuildWarningsBlock(out), tailLines),
+	}
 }
 
 func buildSourcePackage(ctx context.Context, call *wormhole.Call, in buildSourceInput) (any, error) {
@@ -94,7 +120,9 @@ func buildSourcePackage(ctx context.Context, call *wormhole.Call, in buildSource
 
 	call.Logf("info", "building source package from %s", in.Source)
 	call.Progress(-1, "running dpkg-buildpackage -S")
+	stop := startHeartbeat(call, "source build", heartbeatInterval)
 	res, err := r.Run(ctx, pipelineCommand(buildSourceBody, in.Source, in.Depth))
+	stop()
 	if err != nil {
 		return nil, err
 	}
@@ -105,15 +133,7 @@ func buildSourcePackage(ctx context.Context, call *wormhole.Call, in buildSource
 	for _, w := range warningMarkers(out) {
 		call.Logf("warn", "%s", w)
 	}
-	artifacts := findArtifacts(out)
-	return buildResult{
-		Success:   res.ExitCode == 0,
-		ExitCode:  res.ExitCode,
-		Changes:   pickExt(artifacts, ".changes"),
-		Artifacts: artifacts,
-		Workspace: parseWorkspace(out),
-		LogTail:   tail(out, 40),
-	}, nil
+	return finishBuildResult(call, res.ExitCode, out), nil
 }
 
 type lintResult struct {
@@ -144,7 +164,9 @@ func lint(ctx context.Context, call *wormhole.Call, in lintInput) (any, error) {
 		call.Logf("info", "building and linting source package from %s", in.Source)
 	}
 	call.Progress(-1, "running lintian")
+	stop := startHeartbeat(call, "lint", heartbeatInterval)
 	res, err := r.Run(ctx, pipelineCommand(lintBody, in.Source, in.Depth, toolArgs...))
+	stop()
 	if err != nil {
 		return nil, err
 	}
@@ -176,7 +198,9 @@ func checkWatch(ctx context.Context, call *wormhole.Call, in checkWatchInput) (a
 	defer r.Close()
 
 	call.Logf("info", "checking debian/watch from %s", in.Source)
+	stop := startHeartbeat(call, "watch check", heartbeatInterval)
 	res, err := r.Run(ctx, pipelineCommand(checkWatchBody, in.Source, in.Depth))
+	stop()
 	if err != nil {
 		return nil, err
 	}

@@ -1,7 +1,7 @@
 package main
 
 import (
-	_ "embed"
+	"embed"
 	"regexp"
 	"strconv"
 	"strings"
@@ -68,9 +68,44 @@ var (
 	checkWatchBody string
 	//go:embed scripts/lint.sh
 	lintBody string
-	//go:embed scripts/review.sh
-	reviewBody string
+
+	// The review body is split for maintainability: framework (args, config,
+	// step infrastructure), one file per step, and the runner. Assembled
+	// below in that order — steps are pure function definitions, so their
+	// relative order (ReadDir's, sorted by filename) doesn't matter as long
+	// as they all precede the runner.
+	//go:embed scripts/review/framework.sh
+	reviewFrameworkScript string
+	//go:embed scripts/review/runner.sh
+	reviewRunnerScript string
+	//go:embed scripts/review/steps/*.sh
+	reviewStepFiles embed.FS
+
+	reviewBody = assembleReviewBody()
 )
+
+// assembleReviewBody concatenates framework + every steps/*.sh + runner into
+// the single review tool body. Panics on embed inconsistencies, which can
+// only happen at build time (the files are compiled in).
+func assembleReviewBody() string {
+	entries, err := reviewStepFiles.ReadDir("scripts/review/steps")
+	if err != nil {
+		panic(err)
+	}
+	var b strings.Builder
+	b.WriteString(reviewFrameworkScript)
+	for _, e := range entries {
+		data, err := reviewStepFiles.ReadFile("scripts/review/steps/" + e.Name())
+		if err != nil {
+			panic(err)
+		}
+		b.WriteString("\n")
+		b.Write(data)
+	}
+	b.WriteString("\n")
+	b.WriteString(reviewRunnerScript)
+	return b.String()
+}
 
 // pipelineCommand builds a self-contained command: the shared prelude plus the
 // given tool body, invoked with the source-prep args (kind/repo/ref/depth)
