@@ -3,24 +3,28 @@ name: build-wormholes
 # ghcr.io/<owner>/wormhole-<name>. These images carry the wormhole binary and
 # copy it into a mounted directory (see each module's Dockerfile); the
 # interstellar gateway then loads it.
+#
+# Release tags are per-wormhole: `<wormhole>@v<semver>` (e.g. testflinger@v0.2.0)
+# publishes only that wormhole at that version. Pushes to main keep building
+# `:latest` as the tip-of-main integration image.
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['*@v*']
   pull_request:
     branches: [main]
   workflow_dispatch: {} # manual run: rebuilds every wormhole
 permissions:
   contents: read
 jobs:
-  # Discover which wormholes to build: every top-level dir with a Dockerfile,
-  # narrowed to those that changed in this push/PR. Tag pushes and manual runs
-  # build all (a release must publish every image); a new branch or unknown
-  # base also falls back to all.
+  # Discover which wormholes to build (and on tag pushes, which version to
+  # stamp). Tag pushes narrow to a single wormhole. Manual runs and PRs/pushes
+  # to main use the change-diff logic.
   discover:
     runs-on: ubuntu-latest
     outputs:
       wormholes: ${{ steps.set.outputs.wormholes }}
+      version:   ${{ steps.set.outputs.version }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -29,8 +33,9 @@ jobs:
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
-          REF_TYPE: ${{ github.ref_type }}
-          BEFORE: ${{ github.event.before }}
+          REF_TYPE:   ${{ github.ref_type }}
+          REF_NAME:   ${{ github.ref_name }}
+          BEFORE:     ${{ github.event.before }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
@@ -42,8 +47,25 @@ jobs:
           # changed-dirs to build. The empty string is the "build everything"
           # sentinel; "__none__" means "diffed, but no wormhole dir changed".
           changed=""
-          if [ "$REF_TYPE" = "tag" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
-            echo "reason: tag/manual -> build all"
+          version=""
+          if [ "$REF_TYPE" = "tag" ]; then
+            # Per-wormhole release tag: <wormhole>@v<semver>
+            if [[ "$REF_NAME" != *"@v"* ]]; then
+              echo "::error::tag '$REF_NAME' does not match <wormhole>@v<semver>"
+              exit 1
+            fi
+            name="${REF_NAME%@v*}"
+            version="${REF_NAME#*@v}"
+            if ! printf '%s\n' "$all" | grep -qx "$name"; then
+              echo "::error::tag '$REF_NAME' names unknown wormhole '$name'"
+              echo "known wormholes:"
+              printf '  %s\n' $all
+              exit 1
+            fi
+            changed="$name"
+            echo "reason: per-wormhole tag -> build only $name @ $version"
+          elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "reason: manual -> build all"
           elif [ "$EVENT_NAME" = "pull_request" ]; then
             changed=$(git diff --name-only "$PR_BASE_SHA...HEAD" \
               | awk -F/ 'NF>1 {print $1}' | sort -u)
@@ -67,9 +89,11 @@ jobs:
 
           wormholes=$(printf '%s\n' "$selected" | sed '/^$/d' | jq -R . | jq -cs .)
           echo "wormholes=$wormholes" >> "$GITHUB_OUTPUT"
+          echo "version=$version"     >> "$GITHUB_OUTPUT"
           echo "all:      $(printf '%s ' $all)"
           echo "changed:  ${changed:-<all>}"
           echo "selected: $wormholes"
+          echo "version:  ${version:-<none>}"
   build:
     needs: discover
     if: needs.discover.outputs.wormholes != '[]'
@@ -108,6 +132,12 @@ jobs:
         wormhole: ${{ fromJSON(needs.discover.outputs.wormholes) }}
     runs-on: ubuntu-latest
     environment: release
+    # Serialize publishes per-wormhole so a rapid burst of tag pushes (e.g. a
+    # fix-forward release) can't race in GHCR. Different wormholes still
+    # publish in parallel.
+    concurrency:
+      group: publish-${{ matrix.wormhole }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
@@ -127,9 +157,12 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository_owner }}/wormhole-${{ matrix.wormhole }}
+          # Tag pushes emit the parsed semver as the primary tag; main pushes
+          # keep :latest as the tip-of-main integration image. type=ref/branch
+          # stays higher priority than raw so main-branch builds still stamp
+          # VERSION=main (unchanged from the previous behavior).
           tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=${{ needs.discover.outputs.version }},enable=${{ github.ref_type == 'tag' }}
             type=ref,event=branch
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}

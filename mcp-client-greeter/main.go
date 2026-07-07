@@ -34,6 +34,8 @@ import (
 	"github.com/talhaHavadar/interstellar/pkg/wormhole"
 )
 
+var version = "dev" // overridden at link time via -ldflags "-X main.version=..."
+
 type greetInput struct {
 	// Name of the person to greet.
 	Name string `json:"name" jsonschema:"the name to greet"`
@@ -44,7 +46,7 @@ type greetOutput struct {
 }
 
 func main() {
-	w := wormhole.New("mcp-client-greeter", "0.1.0",
+	w := wormhole.New("mcp-client-greeter", version,
 		"Reference example: greets a person, backed by an upstream MCP server.")
 
 	w.Require(wormhole.Port{

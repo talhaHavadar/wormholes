@@ -34,6 +34,8 @@ import (
 	"github.com/talhaHavadar/interstellar/pkg/wormhole"
 )
 
+var version = "dev" // overridden at link time via -ldflags "-X main.version=..."
+
 type tunnelConfig struct {
 	// ConfigFile is the path to a wg-quick configuration file (on the
 	// gateway host). ConfigText is the same content provided inline.
@@ -42,7 +44,7 @@ type tunnelConfig struct {
 }
 
 func main() {
-	w := wormhole.New("wireguard", "0.1.0",
+	w := wormhole.New("wireguard", version,
 		"Provides a network-context routed through a userspace WireGuard tunnel.")
 
 	w.Provide(

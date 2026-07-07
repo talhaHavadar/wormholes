@@ -22,7 +22,7 @@ import (
 	"github.com/talhaHavadar/interstellar/pkg/wormhole"
 )
 
-var version = "0.1.0"
+var version = "dev" // overridden at link time via -ldflags "-X main.version=..."
 
 func main() {
 	w := wormhole.New("debian-packager", version,

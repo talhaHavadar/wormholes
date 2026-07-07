@@ -32,6 +32,8 @@ import (
 	"github.com/talhaHavadar/interstellar/pkg/wormhole"
 )
 
+var version = "dev" // overridden at link time via -ldflags "-X main.version=..."
+
 type tailnetConfig struct {
 	// Hostname is the node name this gateway presents on the tailnet.
 	Hostname string `json:"hostname"`
@@ -49,7 +51,7 @@ type tailnetConfig struct {
 }
 
 func main() {
-	w := wormhole.New("tailscale", "0.1.0",
+	w := wormhole.New("tailscale", version,
 		"Provides a network-context routed through a Tailscale tailnet (userspace tsnet).")
 
 	w.Provide(
