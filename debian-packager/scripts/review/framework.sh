@@ -57,6 +57,7 @@ ENABLED_STEPS="
   changelog_top
   changelog_self_refs
   hardening_flags
+  debhelper_compat
   autopkgtest_present
   news_debian
   signed_tags
