@@ -35,14 +35,35 @@ step_lintian_binary() {
 		summary "no .deb pulled from $ppa for $pkg/$series (not built yet?)"
 		return 0
 	fi
+
+	profile=""
+	if have dpkg-parsechangelog; then
+		dist="$(dpkg-parsechangelog -SDistribution)"
+		series=${dist%%-*}
+		profile=""
+		if have ubuntu-distro-info; then
+			if ubuntu-distro-info --series="$series" >/dev/null 2>&1; then
+				profile="--profile ubuntu"
+			elif debian-distro-info --series="$series" >/dev/null 2>&1; then
+				profile="--profile debian"
+			fi
+		else
+			summary "missing ubuntu-distro-info defaulting to empty profile for lintian call"
+		fi
+	else
+		summary "missing dpkg-parsechangelog defaulting to empty profile for lintian call"
+	fi
+
+	echo "=== lintian $profile -EviIL +pedantic ==="
 	rc=0
-	# shellcheck disable=SC2086
-	lintian -EviIL +pedantic $debs || rc=$?
-	if [ "$rc" -ge 2 ]; then
+	# shellcheck disable=SC2086 # intentional because we want smarter profile handling for lintian
+	lintian $profile -EviIL +pedantic $debs || rc=$?
+
+	if [ "$rc" -eq 1 ]; then
 		status fail
 		summary "lintian failed (exit $rc)"
 		return "$rc"
-	elif [ "$rc" -eq 1 ]; then
+	elif [ "$rc" -ge 2 ]; then
 		status warn
 		summary "lintian reported tags on binary packages"
 		return 0

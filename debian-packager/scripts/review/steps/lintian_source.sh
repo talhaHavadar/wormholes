@@ -30,20 +30,40 @@ step_lintian_source() {
 			return 1
 		}
 	fi
-	# Bare `lintian` reads debian/changelog from cwd and auto-locates the
-	# matching .changes in ../, ../build-area, or /var/cache/pbuilder/result.
-	# It is anchored to this package's exact name+version, so a sibling
-	# package's stale .dsc in the same parent (~/projects/debian/*) can't
-	# ever be picked by mistake. Staying in cwd also keeps every step after
-	# this one on the source tree, as they assume.
+
+	profile=""
+	if have dpkg-parsechangelog; then
+		dist="$(dpkg-parsechangelog -SDistribution)"
+		series=${dist%%-*}
+		profile=""
+		if have ubuntu-distro-info; then
+			if ubuntu-distro-info --series="$series" >/dev/null 2>&1; then
+				profile="--profile ubuntu"
+			elif debian-distro-info --series="$series" >/dev/null 2>&1; then
+				profile="--profile debian"
+			fi
+		else
+			summary "missing ubuntu-distro-info defaulting to empty profile for lintian call"
+		fi
+	else
+		summary "missing dpkg-parsechangelog defaulting to empty profile for lintian call"
+	fi
+
+	echo "=== lintian $profile -EviIL +pedantic ==="
 	rc=0
-	lintian -EviIL +pedantic || rc=$?
-	# lintian: 0 clean, 1 had tags, >=2 internal error
-	if [ "$rc" -ge 2 ]; then
+	# shellcheck disable=SC2086 # intentional because we want smarter profile handling for lintian
+	lintian $profile -EviIL +pedantic || rc=$?
+
+	# man lintian
+	# EXIT STATUS
+	#  0   Normal operation.
+	#  1   Lintian run-time error. An error message is sent to stderr.
+	#  2   Detected a condition specified via the --fail-on option. This can be used to trigger a non-zero exit value in case of policy violations.
+	if [ "$rc" -eq 1 ]; then
 		status fail
 		summary "lintian failed (exit $rc)"
 		return "$rc"
-	elif [ "$rc" -eq 1 ]; then
+	elif [ "$rc" -ge 2 ]; then
 		status warn
 		summary "lintian reported tags — every E must be resolved, every W needs a fix or documented justification"
 		return 0
