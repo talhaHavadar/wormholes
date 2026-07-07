@@ -43,10 +43,10 @@ step_lintian_source() {
 				profile="--profile debian"
 			fi
 		else
-			summary "missing ubuntu-distro-info defaulting to empty profile for lintian call"
+			hint "missing ubuntu-distro-info defaulting to empty profile for lintian call"
 		fi
 	else
-		summary "missing dpkg-parsechangelog defaulting to empty profile for lintian call"
+		hint "missing dpkg-parsechangelog defaulting to empty profile for lintian call"
 	fi
 
 	echo "=== lintian $profile -EviIL +pedantic ==="
