@@ -21,6 +21,7 @@ step_lintian_binary() {
 		return 1
 	}
 	series=$(dpkg-parsechangelog -S Distribution 2>/dev/null)
+	series=${series%%-*}
 	art=$(mktemp -d)
 	register_cleanup "$art"
 	(cd "$art" && pull-ppa-debs --ppa "${ppa#ppa:}" "$pkg" "$series") ||
@@ -37,21 +38,14 @@ step_lintian_binary() {
 	fi
 
 	profile=""
-	if have dpkg-parsechangelog; then
-		dist="$(dpkg-parsechangelog -SDistribution)"
-		series=${dist%%-*}
-		profile=""
-		if have ubuntu-distro-info; then
-			if ubuntu-distro-info --series="$series" >/dev/null 2>&1; then
-				profile="--profile ubuntu"
-			elif debian-distro-info --series="$series" >/dev/null 2>&1; then
-				profile="--profile debian"
-			fi
-		else
-			hint "missing ubuntu-distro-info defaulting to empty profile for lintian call"
+	if have ubuntu-distro-info; then
+		if ubuntu-distro-info --series="$series" >/dev/null 2>&1; then
+			profile="--profile ubuntu"
+		elif debian-distro-info --series="$series" >/dev/null 2>&1; then
+			profile="--profile debian"
 		fi
 	else
-		hint "missing dpkg-parsechangelog defaulting to empty profile for lintian call"
+		hint "missing ubuntu-distro-info defaulting to empty profile for lintian call"
 	fi
 
 	echo "=== lintian $profile -EviIL +pedantic ==="
