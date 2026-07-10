@@ -6,9 +6,12 @@ step_copyright_lrc() {
 		return 0
 	fi
 	rc=0
-	lrc || rc=$?
+	timeout 30m lrc || rc=$?
 	if [ "$rc" -eq 0 ]; then
 		status ok
+	elif [ "$rc" -eq 124 ]; then
+		status warn
+		summary "lrc timed out after 30m"
 	else
 		status warn
 		summary "lrc reported discrepancies (exit $rc)"
