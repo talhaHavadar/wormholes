@@ -85,7 +85,7 @@ func classifyQueue(qs queueStatus, ourJobs map[string]bool, waitIfBusy bool) que
 	if len(qs.Agents) == 0 {
 		return queueVerdict{false, "queue has no agents"}
 	}
-	var free, out int
+	var free, out, reserved int
 	var busyStates []string
 	for _, a := range qs.Agents {
 		switch a.Status {
@@ -95,6 +95,9 @@ func classifyQueue(qs queueStatus, ourJobs map[string]bool, waitIfBusy bool) que
 			out++
 		default:
 			busyStates = append(busyStates, a.Name+":"+a.Status)
+			if a.Status == "reserve" {
+				reserved++
+			}
 		}
 	}
 	waitingOthers := 0
@@ -110,6 +113,16 @@ func classifyQueue(qs queueStatus, ourJobs map[string]bool, waitIfBusy bool) que
 		return queueVerdict{true, summary}
 	case len(busyStates) == 0:
 		return queueVerdict{false, "all agents offline or in maintenance (" + summary + ")"}
+	case reserved > 0 && reserved == len(busyStates) && !waitIfBusy:
+		// Every busy agent is holding a reservation and adoption didn't
+		// find one of ours in this orchestrator's client history — the
+		// reservation is either someone else's or ours from a different
+		// host. A fresh submit would just queue behind it for hours;
+		// wait_if_busy lets the operator opt in to that anyway.
+		return queueVerdict{false, "queue is currently reserved (" + strings.Join(busyStates, ", ") +
+			") and no adoptable reservation was found for this orchestrator; " +
+			"cancel the reservation, reserve from the orchestrator host so its testflinger-cli history has it, " +
+			"or set wait_if_busy to queue behind (" + summary + ")"}
 	case waitingOthers == 0:
 		return queueVerdict{true, "agents busy (" + strings.Join(busyStates, ", ") +
 			") but nothing queued ahead of us (" + summary + ")"}
@@ -219,6 +232,14 @@ func parseReserveExpiry(log string) (time.Time, bool) {
 // every ssh key we need already authorized on it (a superset is fine — we
 // can still log in).
 func jobSpecMatches(showJSON []byte, want jobSpec) bool {
+	return jobSpecMismatch(showJSON, want) == ""
+}
+
+// jobSpecMismatch returns a short reason why a previously submitted job does
+// not match the reservation we want, or "" if it does. Used by adoption to
+// log why an otherwise plausible candidate (same queue, still in flight) was
+// skipped, so a config/spec drift is diagnosable instead of invisible.
+func jobSpecMismatch(showJSON []byte, want jobSpec) string {
 	var job struct {
 		JobQueue      string         `json:"job_queue"`
 		ProvisionData map[string]any `json:"provision_data"`
@@ -227,26 +248,28 @@ func jobSpecMatches(showJSON []byte, want jobSpec) bool {
 		} `json:"reserve_data"`
 	}
 	if err := json.Unmarshal(showJSON, &job); err != nil {
-		return false
+		return "show output is not valid JSON: " + err.Error()
 	}
 	if job.JobQueue != want.Queue {
-		return false
+		return fmt.Sprintf("job_queue %q, want %q", job.JobQueue, want.Queue)
 	}
 	if !looselyEqual(job.ProvisionData, want.ProvisionData) {
-		return false
+		return fmt.Sprintf("provision_data %v, want %v", job.ProvisionData, want.ProvisionData)
 	}
 	have := map[string]bool{}
+	var haveList []string
 	for _, k := range job.ReserveData.SSHKeys {
 		if s, ok := k.(string); ok {
 			have[s] = true
+			haveList = append(haveList, s)
 		}
 	}
 	for _, k := range want.SSHKeys {
 		if !have[k] {
-			return false
+			return fmt.Sprintf("ssh_keys %v, need %q on the reserved machine to log in", haveList, k)
 		}
 	}
-	return true
+	return ""
 }
 
 // looselyEqual compares two decoded documents structurally, treating all

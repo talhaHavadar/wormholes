@@ -358,7 +358,12 @@ func findAdoptable(ctx context.Context, req *wormhole.LinkRequest, cfg config, o
 			continue
 		}
 		show, err := capture(ctx, orch, withTimeout(tfCmd(cfg, "show", row.ID), cfg.PollTimeoutSecs))
-		if err != nil || show.exit != 0 || !jobSpecMatches([]byte(show.stdout), want) {
+		if err != nil || show.exit != 0 {
+			continue
+		}
+		if reason := jobSpecMismatch([]byte(show.stdout), want); reason != "" {
+			req.Logf("info", "job %s (%s) on %s not adoptable: %s",
+				row.ID, st, row.Queue, reason)
 			continue
 		}
 		if st != "reserve" {
