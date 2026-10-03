@@ -57,7 +57,14 @@ func liveConfig(t *testing.T, extra string) config {
 	if queue == "" {
 		queue = "megatron"
 	}
-	raw := `{"job_queue":"` + queue + `","provision_data":{"distro":"resolute"},"ssh_keys":["gh:talhaHavadar"],"testflinger_bin":"testflinger"` + extra + `}`
+	// When TESTFLINGER_CLIENT_ID/TESTFLINGER_SECRET_KEY are exported, point the
+	// config at them so the live run exercises the authenticated path; parseConfig
+	// resolves the *_env fields from this process's environment.
+	auth := ""
+	if os.Getenv("TESTFLINGER_CLIENT_ID") != "" && os.Getenv("TESTFLINGER_SECRET_KEY") != "" {
+		auth = `,"client_id_env":"TESTFLINGER_CLIENT_ID","secret_key_env":"TESTFLINGER_SECRET_KEY"`
+	}
+	raw := `{"job_queue":"` + queue + `","provision_data":{"distro":"resolute"},"ssh_keys":["gh:talhaHavadar"],"testflinger_bin":"testflinger"` + auth + extra + `}`
 	cfg, err := parseConfig([]byte(raw))
 	if err != nil {
 		t.Fatal(err)

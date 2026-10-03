@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -88,6 +89,15 @@ type config struct {
 	// WatchIntervalSecs is how often the live link re-checks the job state to
 	// notice external cancellation.
 	WatchIntervalSecs int `json:"watch_interval_secs"`
+	// ClientID / SecretKey authenticate with the Testflinger server as a client
+	// (raising the reservation ceiling above the unauthenticated 6h maximum and
+	// enabling authenticated queries). Prefer the *_env forms so the secret is
+	// not stored in the config file; they name an environment variable read on
+	// the gateway. When either is resolved, both must be.
+	ClientID     string `json:"client_id"`
+	ClientIDEnv  string `json:"client_id_env"`
+	SecretKey    string `json:"secret_key"`
+	SecretKeyEnv string `json:"secret_key_env"`
 }
 
 func parseConfig(raw json.RawMessage) (config, error) {
@@ -104,6 +114,22 @@ func parseConfig(raw json.RawMessage) (config, error) {
 		if _, err := regexp.Compile(c.SSHInfoRegex); err != nil {
 			return config{}, fmt.Errorf("testflinger config: invalid ssh_info_regex: %w", err)
 		}
+	}
+	// Resolve the env indirection: a named, non-empty env var overrides the
+	// literal (matching the tailscale authkey_env pattern). Authentication
+	// needs both halves, so reject a half-configured pair up front.
+	if c.ClientIDEnv != "" {
+		if v := os.Getenv(c.ClientIDEnv); v != "" {
+			c.ClientID = v
+		}
+	}
+	if c.SecretKeyEnv != "" {
+		if v := os.Getenv(c.SecretKeyEnv); v != "" {
+			c.SecretKey = v
+		}
+	}
+	if (c.ClientID == "") != (c.SecretKey == "") {
+		return config{}, fmt.Errorf("testflinger config: client_id and secret_key must be set together")
 	}
 	if c.TestflingerBin == "" {
 		c.TestflingerBin = defaultTestflingerBin
@@ -645,7 +671,18 @@ func tfCmd(cfg config, args ...string) wormhole.Command {
 		argv = append(argv, "--server", cfg.Server)
 	}
 	argv = append(argv, args...)
-	return wormhole.Command{Argv: argv}
+	cmd := wormhole.Command{Argv: argv}
+	if cfg.ClientID != "" && cfg.SecretKey != "" {
+		// Passed as env vars (the CLI reads them in its __init__, so every
+		// subcommand authenticates) rather than --client-id/--secret-key flags
+		// (only submit/login/secret accept those). The exec runner sets them as
+		// real env on the orchestrator, so the secret stays out of the argv.
+		cmd.Env = map[string]string{
+			"TESTFLINGER_CLIENT_ID":  cfg.ClientID,
+			"TESTFLINGER_SECRET_KEY": cfg.SecretKey,
+		}
+	}
+	return cmd
 }
 
 func withTimeout(cmd wormhole.Command, secs int) wormhole.Command {

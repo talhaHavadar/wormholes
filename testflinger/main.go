@@ -45,6 +45,8 @@
 //	      # ssh_user: ubuntu                      # default: parsed from the reserve log
 //	      # adopt_min_remaining_secs: 900         # don't adopt reservations with less time left
 //	      # watch_interval_secs: 60               # live job-state check cadence
+//	      # client_id_env: TESTFLINGER_CLIENT_ID  # names a gateway env var; secret stays out of config
+//	      # secret_key_env: TESTFLINGER_SECRET_KEY # (literal client_id/secret_key also accepted)
 //	    via:
 //	      orchestrator: tf-box                    # ssh target with testflinger-cli
 package main
