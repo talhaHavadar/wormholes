@@ -7,7 +7,7 @@
 #
 #   docker run --rm -v extra-wormholes:/out ghcr.io/talhahavadar/wormhole-mcp-client-greeter
 #
-FROM golang:1.26 AS build
+FROM golang:1.27 AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
