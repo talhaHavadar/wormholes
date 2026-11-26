@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/talhaHavadar/interstellar v0.3.0
-	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
+	golang.zx2c4.com/wireguard v0.0.0-20261024220952-b3bc704ef0ee
 )
 
 require (
