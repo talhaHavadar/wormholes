@@ -2,7 +2,7 @@ module github.com/talhaHavadar/wormholes/contained-debdev
 
 go 1.26.4
 
-require github.com/talhaHavadar/interstellar v0.6.0
+require github.com/talhaHavadar/interstellar v0.9.0
 
 require (
 	github.com/fatih/color v1.19.0 // indirect
