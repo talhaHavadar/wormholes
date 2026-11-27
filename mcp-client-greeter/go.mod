@@ -2,7 +2,7 @@ module github.com/talhaHavadar/wormholes/mcp-client-greeter
 
 go 1.26.4
 
-require github.com/talhaHavadar/interstellar v0.3.0
+require github.com/talhaHavadar/interstellar v0.9.0
 
 require (
 	github.com/fatih/color v1.18.0 // indirect
