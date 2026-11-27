@@ -67,17 +67,25 @@ jobs:
           elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "reason: manual -> build all"
           elif [ "$EVENT_NAME" = "pull_request" ]; then
-            changed=$(git diff --name-only "$PR_BASE_SHA...HEAD" \
-              | awk -F/ 'NF>1 {print $1}' | sort -u)
-            changed=${changed:-__none__}
+            files=$(git diff --name-only "$PR_BASE_SHA...HEAD")
+            if grep -qx '.github/workflows/build-wormholes.yml' <<<"$files"; then
+              echo "reason: workflow changed -> build all"
+            else
+              changed=$(awk -F/ 'NF>1 {print $1}' <<<"$files" | sort -u)
+              changed=${changed:-__none__}
+            fi
           elif [ "$EVENT_NAME" = "push" ]; then
             if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
                || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
               echo "reason: unknown base (new branch / force-push) -> build all"
             else
-              changed=$(git diff --name-only "$BEFORE" "$GITHUB_SHA" \
-                | awk -F/ 'NF>1 {print $1}' | sort -u)
-              changed=${changed:-__none__}
+              files=$(git diff --name-only "$BEFORE" "$GITHUB_SHA")
+              if grep -qx '.github/workflows/build-wormholes.yml' <<<"$files"; then
+                echo "reason: workflow changed -> build all"
+              else
+                changed=$(awk -F/ 'NF>1 {print $1}' <<<"$files" | sort -u)
+                changed=${changed:-__none__}
+              fi
             fi
           fi
 
